@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 import torch
 from torch import Tensor
 from typing_extensions import Literal
+import time
 
 from .cuda._wrapper import (
     fully_fused_projection,
@@ -184,6 +185,9 @@ def rasterization(
         'flatten_ids', 'isect_offsets', 'width', 'height', 'tile_size'])
 
     """
+    profile = True
+
+    overall_start = time.perf_counter_ns()
 
     N = means.shape[0]
     C = viewmats.shape[0]
@@ -209,6 +213,7 @@ def rasterization(
         assert (sh_degree + 1) ** 2 <= colors.shape[1], colors.shape
 
     # Project Gaussians to 2D. Directly pass in {quats, scales} is faster than precomputing covars.
+    start = time.perf_counter_ns()
     proj_results = fully_fused_projection(
         means,
         None,  # covars,
@@ -248,7 +253,13 @@ def rasterization(
     if compensations is not None:
         opacities = opacities * compensations
 
+    if profile:
+        torch.cuda.synchronize()
+    end = time.perf_counter_ns()
+    fully_fused_projection_time = end - start
+
     # Identify intersecting tiles
+    start = time.perf_counter_ns()
     tile_width = math.ceil(width / float(tile_size))
     tile_height = math.ceil(height / float(tile_size))
     tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
@@ -263,10 +274,21 @@ def rasterization(
         camera_ids=camera_ids,
         gaussian_ids=gaussian_ids,
     )
+    if profile:
+        torch.cuda.synchronize()
+    end = time.perf_counter_ns()
+    isect_tiles_time = end - start
+
+    start = time.perf_counter_ns()
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
+    if profile:
+        torch.cuda.synchronize()
+    end = time.perf_counter_ns()
+    isect_offset_encode_time = end - start
 
     # TODO: SH also suport N-D.
     # Compute the per-view colors
+    start = time.perf_counter_ns()
     if not (
         colors.dim() == 3 and sh_degree is None
     ):  # silently support [C, N, D] color.
@@ -287,8 +309,13 @@ def rasterization(
         )  # [nnz, D] or [C, N, 3]
         # make it apple-to-apple with Inria's CUDA Backend.
         colors = torch.clamp_min(colors + 0.5, 0.0)
+    if profile:
+        torch.cuda.synchronize()
+    end = time.perf_counter_ns()
+    spherical_harmonics_time = end - start
 
     # Rasterize to pixels
+    start = time.perf_counter_ns()
     if render_mode in ["RGB+D", "RGB+ED"]:
         colors = torch.cat((colors, depths[..., None]), dim=-1)
     elif render_mode in ["D", "ED"]:
@@ -298,6 +325,7 @@ def rasterization(
     if colors.shape[-1] > 32:
         # slice into 32-channel chunks
         n_chunks = (colors.shape[-1] + 31) // 32
+        print(f"  rasterization(): n_chunks: {n_chunks}")
         render_colors = []
         render_alphas = []
 
@@ -350,6 +378,10 @@ def rasterization(
             ],
             dim=-1,
         )
+    torch.cuda.synchronize()
+    if profile:
+        end = time.perf_counter_ns()
+    rasterize_to_pixels_time = end - start
 
     meta = {
         "camera_ids": camera_ids,
@@ -369,6 +401,19 @@ def rasterization(
         "height": height,
         "tile_size": tile_size,
     }
+    torch.cuda.synchronize()
+    overall_end = time.perf_counter_ns()
+    overall_time = overall_end - overall_start
+
+    print(f"overall_time: {int(overall_time / 1e3)} us")
+    if profile:
+        print(f"  fully_fused_projection_time: {int(fully_fused_projection_time / 1e3)} us")
+        print(f"  isect_tiles_time: {int(isect_tiles_time / 1e3)} us")
+        print(f"  isect_offset_encode_time: {int(isect_offset_encode_time / 1e3)} us")
+        print(f"  spherical_harmonics_time: {int(spherical_harmonics_time / 1e3)} us")
+        print(f"  rasterize_to_pixels_time: {int(rasterize_to_pixels_time / 1e3)} us")
+
+
     return render_colors, render_alphas, meta
 
 

@@ -2,6 +2,9 @@
 #include "helpers.cuh"
 #include <cooperative_groups.h>
 #include <cub/cub.cuh>
+#include <chrono> // thx: https://stackoverflow.com/questions/43801626/measuring-latency-over-network
+#include <iostream>
+
 
 namespace cg = cooperative_groups;
 
@@ -137,6 +140,9 @@ isect_tiles_tensor(const torch::Tensor &means2d, // [C, N, 2] or [nnz, 2]
     torch::Tensor tiles_per_gauss =
         torch::empty_like(depths, depths.options().dtype(torch::kInt32));
 
+    bool profile = true;
+
+    auto start = std::chrono::high_resolution_clock::now();
     int64_t n_isects;
     torch::Tensor cum_tiles_per_gauss;
     if (total_elems) {
@@ -152,6 +158,12 @@ isect_tiles_tensor(const torch::Tensor &means2d, // [C, N, 2] or [nnz, 2]
         n_isects = 0;
     }
 
+    if(profile){
+        cudaDeviceSynchronize();
+        std::cout << "      isect_tiles first call: " << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() << " us " << std::endl;
+    }
+
+    start = std::chrono::high_resolution_clock::now();
     // second pass: compute isect_ids and flatten_ids as a packed tensor
     torch::Tensor isect_ids =
         torch::empty({n_isects}, depths.options().dtype(torch::kInt64));
@@ -166,9 +178,15 @@ isect_tiles_tensor(const torch::Tensor &means2d, // [C, N, 2] or [nnz, 2]
             tile_size, tile_width, tile_height, tile_n_bits, nullptr,
             isect_ids.data_ptr<int64_t>(), flatten_ids.data_ptr<int32_t>());
     }
+    if(profile){
+        cudaDeviceSynchronize();
+        std::cout << "      isect_tiles second call: " << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() << " us " << std::endl;
+    }
+
 
     // optionally sort the Gaussians by isect_ids
     if (n_isects && sort) {
+        start = std::chrono::high_resolution_clock::now();
         torch::Tensor isect_ids_sorted = torch::empty_like(isect_ids);
         torch::Tensor flatten_ids_sorted = torch::empty_like(flatten_ids);
 
@@ -204,6 +222,11 @@ isect_tiles_tensor(const torch::Tensor &means2d, // [C, N, 2] or [nnz, 2]
                         flatten_ids.data_ptr<int32_t>(),
                         flatten_ids_sorted.data_ptr<int32_t>(), n_isects, 0,
                         32 + tile_n_bits + cam_n_bits, stream);
+        }
+
+        if(profile){
+            cudaDeviceSynchronize();
+            std::cout << "      sort: " << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count() << " us " << std::endl;
         }
         return std::make_tuple(tiles_per_gauss, isect_ids_sorted, flatten_ids_sorted);
     } else {
