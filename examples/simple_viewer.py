@@ -56,7 +56,7 @@ if args.ckpt is None:
     print("Number of Gaussians:", N)
 
     # batched render
-    render_colors, render_alphas, meta = rasterization(
+    render_colors, render_alphas, met, profile_stats = rasterization(
         means,  # [N, 3]
         quats,  # [N, 4]
         scales,  # [N, 3]

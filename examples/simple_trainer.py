@@ -349,7 +349,7 @@ class Runner:
             colors = torch.cat([self.splats["sh0"], self.splats["shN"]], 1)  # [N, K, 3]
 
         rasterize_mode = "antialiased" if self.cfg.antialiased else "classic"
-        render_colors, render_alphas, info = rasterization(
+        render_colors, render_alphas, info, profile_stats = rasterization(
             means=means,
             quats=quats,
             scales=scales,
@@ -365,7 +365,7 @@ class Runner:
             rasterize_mode=rasterize_mode,
             **kwargs,
         )
-        return render_colors, render_alphas, info
+        return render_colors, render_alphas, info, profile_stats
 
     def train(self):
         cfg = self.cfg
@@ -441,7 +441,7 @@ class Runner:
             sh_degree_to_use = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
             # forward
-            renders, alphas, info = self.rasterize_splats(
+            renders, alphas, info, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -801,7 +801,16 @@ class Runner:
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
         ellipse_time = 0
-        metrics = {"psnr": [], "ssim": [], "lpips": []}
+        metrics = {"psnr": [],
+                   "ssim": [],
+                   "lpips": [],
+                   "fully_fused_projection_time": [],
+                   "isect_tiles_time": [],
+                   "isect_offset_encode_time": [],
+                   "spherical_harmonics_time": [],
+                   "rasterize_to_pixels_time": [],
+                   "total_rasterization_time": [],
+                   }
         for i, data in enumerate(valloader):
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
@@ -810,7 +819,7 @@ class Runner:
 
             torch.cuda.synchronize()
             tic = time.time()
-            colors, _, _ = self.rasterize_splats(
+            colors, _, _, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -834,25 +843,39 @@ class Runner:
             metrics["psnr"].append(self.psnr(colors, pixels))
             metrics["ssim"].append(self.ssim(colors, pixels))
             metrics["lpips"].append(self.lpips(colors, pixels))
+            if i > 0:
+                # don't count the first iteration (due to startup overhead)
+                for k,v in profile_stats.items():
+                    metrics[k].append(v)
 
         ellipse_time /= len(valloader)
 
-        psnr = torch.stack(metrics["psnr"]).mean()
-        ssim = torch.stack(metrics["ssim"]).mean()
-        lpips = torch.stack(metrics["lpips"]).mean()
-        print(
-            f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
-            f"Time: {ellipse_time:.3f}s/image "
-            f"Number of GS: {len(self.splats['means3d'])}"
-        )
+        stats = {}
+        for k,v in metrics.items():
+            stats[k] = torch.stack(v).mean().item()
+
+        stats["ellipse_time"] = ellipse_time
+        stats["num_GS"] = len(self.splats["means3d"])
+        # psnr = torch.stack(metrics["psnr"]).mean()
+        # ssim = torch.stack(metrics["ssim"]).mean()
+        # lpips = torch.stack(metrics["lpips"]).mean()
+        for k,v in stats.items():
+            print(f"{k}: {v:.4f}")
+
+        # print(
+        #     # f"PSNR: {psnr.item():.3f}, SSIM: {ssim.item():.4f}, LPIPS: {lpips.item():.3f} "
+        #     f"Time: {ellipse_time:.4f}s/image "
+        #     f"Number of GS: {len(self.splats['means3d'])}"
+        # )
         # save stats as json
-        stats = {
-            "psnr": psnr.item(),
-            "ssim": ssim.item(),
-            "lpips": lpips.item(),
-            "ellipse_time": ellipse_time,
-            "num_GS": len(self.splats["means3d"]),
-        }
+       
+        # stats = {
+        #     "psnr": psnr.item(),
+        #     "ssim": ssim.item(),
+        #     "lpips": lpips.item(),
+        #     "ellipse_time": ellipse_time,
+        #     "num_GS": len(self.splats["means3d"]),
+        # }
         with open(f"{self.stats_dir}/val_step{step:04d}.json", "w") as f:
             json.dump(stats, f)
         # save stats to tensorboard
@@ -883,7 +906,7 @@ class Runner:
 
         canvas_all = []
         for i in tqdm.trange(len(camtoworlds), desc="Rendering trajectory"):
-            renders, _, _ = self.rasterize_splats(
+            renders, _, _, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds[i : i + 1],
                 Ks=K[None],
                 width=width,
@@ -924,7 +947,7 @@ class Runner:
         c2w = torch.from_numpy(c2w).float().to(self.device)
         K = torch.from_numpy(K).float().to(self.device)
 
-        render_colors, _, _ = self.rasterize_splats(
+        render_colors, _, _, profile_stats = self.rasterize_splats(
             camtoworlds=c2w[None],
             Ks=K[None],
             width=W,

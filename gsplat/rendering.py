@@ -14,7 +14,6 @@ from .cuda._wrapper import (
     spherical_harmonics,
 )
 
-
 def rasterization(
     means: Tensor,  # [N, 3]
     quats: Tensor,  # [N, 4]
@@ -186,6 +185,7 @@ def rasterization(
 
     """
     profile = True
+    profile_stats = {}
 
     overall_start = time.perf_counter_ns()
 
@@ -256,7 +256,7 @@ def rasterization(
     if profile:
         torch.cuda.synchronize()
     end = time.perf_counter_ns()
-    fully_fused_projection_time = end - start
+    profile_stats["fully_fused_projection_time"] = int((end - start) / 1e3) # us
 
     # Identify intersecting tiles
     start = time.perf_counter_ns()
@@ -277,14 +277,14 @@ def rasterization(
     if profile:
         torch.cuda.synchronize()
     end = time.perf_counter_ns()
-    isect_tiles_time = end - start
+    profile_stats["isect_tiles_time"] = int((end - start) / 1e3) # us
 
     start = time.perf_counter_ns()
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
     if profile:
         torch.cuda.synchronize()
     end = time.perf_counter_ns()
-    isect_offset_encode_time = end - start
+    profile_stats["isect_offset_encode_time"] = int((end - start) / 1e3) # us
 
     # TODO: SH also suport N-D.
     # Compute the per-view colors
@@ -312,7 +312,7 @@ def rasterization(
     if profile:
         torch.cuda.synchronize()
     end = time.perf_counter_ns()
-    spherical_harmonics_time = end - start
+    profile_stats["spherical_harmonics_time"] = int((end - start) / 1e3) # us
 
     # Rasterize to pixels
     start = time.perf_counter_ns()
@@ -381,7 +381,7 @@ def rasterization(
     torch.cuda.synchronize()
     if profile:
         end = time.perf_counter_ns()
-    rasterize_to_pixels_time = end - start
+    profile_stats["rasterize_to_pixels_time"] = int((end - start) / 1e3) # us
 
     meta = {
         "camera_ids": camera_ids,
@@ -403,18 +403,20 @@ def rasterization(
     }
     torch.cuda.synchronize()
     overall_end = time.perf_counter_ns()
-    overall_time = overall_end - overall_start
+    profile_stats["total_rasterization_time"] = int((overall_end - overall_start) / 1e3) # us
 
-    print(f"overall_time: {int(overall_time / 1e3)} us")
-    if profile:
-        print(f"  fully_fused_projection_time: {int(fully_fused_projection_time / 1e3)} us")
-        print(f"  isect_tiles_time: {int(isect_tiles_time / 1e3)} us")
-        print(f"  isect_offset_encode_time: {int(isect_offset_encode_time / 1e3)} us")
-        print(f"  spherical_harmonics_time: {int(spherical_harmonics_time / 1e3)} us")
-        print(f"  rasterize_to_pixels_time: {int(rasterize_to_pixels_time / 1e3)} us")
+    for k,v in profile_stats.items():
+        if k == "total_rasterization_time":
+            print(f"{k}: {v} us")
+        else:
+            # indent it
+            print(f"    {k}: {v} us")
 
+    for k,v in profile_stats.items():
+        # simple_trainer.py's averaging expects size-1 tensors.
+        profile_stats[k] = torch.Tensor([v])
 
-    return render_colors, render_alphas, meta
+    return render_colors, render_alphas, meta, profile_stats
 
 
 def rasterization_legacy_wrapper(
