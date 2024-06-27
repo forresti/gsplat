@@ -6,5 +6,6 @@ python simple_trainer.py \
     --data_factor 4 \
     --result_dir ./results/bicycle \
     --max_steps 7000 \
-    --ckpt results/bicycle/ckpts/ckpt_6999.pt
+    --ckpt results/bicycle/ckpts/ckpt_6999.pt \
+    --max_eval_steps 10
 

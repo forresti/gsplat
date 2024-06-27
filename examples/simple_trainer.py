@@ -9,6 +9,7 @@ import imageio
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.profiler import profile, record_function, ProfilerActivity
 import tqdm
 import tyro
 import viser
@@ -137,6 +138,8 @@ class Config:
     tb_every: int = 100
     # Save training images to tensorboard
     tb_save_image: bool = False
+
+    max_eval_steps: int = -1
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -801,6 +804,7 @@ class Runner:
             self.valset, batch_size=1, shuffle=False, num_workers=1
         )
         ellipse_time = 0
+        warmup_iters = 1
         metrics = {"psnr": [],
                    "ssim": [],
                    "lpips": [],
@@ -811,7 +815,13 @@ class Runner:
                    "rasterize_to_pixels_time": [],
                    "total_rasterization_time": [],
                    }
+    
+        # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+
         for i, data in enumerate(valloader):
+            # if i >= warmup_iters:
+            #     # thx: https://dev-discuss.pytorch.org/t/using-nsight-systems-to-profile-gpu-workload/59
+            #     torch.cuda.cudart().cudaProfilerStart()
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
@@ -843,10 +853,15 @@ class Runner:
             metrics["psnr"].append(self.psnr(colors, pixels))
             metrics["ssim"].append(self.ssim(colors, pixels))
             metrics["lpips"].append(self.lpips(colors, pixels))
-            if i > 0:
+            if i >= warmup_iters:
                 # don't count the first iteration (due to startup overhead)
                 for k,v in profile_stats.items():
                     metrics[k].append(v)
+        
+            if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
+                break
+        
+        # torch.cuda.cudart().cudaProfilerStop()
 
         ellipse_time /= len(valloader)
 
@@ -926,6 +941,9 @@ class Runner:
             )
             canvas = (canvas.cpu().numpy() * 255).astype(np.uint8)
             canvas_all.append(canvas)
+
+            if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
+                break
 
         # save to video
         video_dir = f"{cfg.result_dir}/videos"

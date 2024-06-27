@@ -529,17 +529,17 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_kernel(
     const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
-    const float2 *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
-    const float3 *__restrict__ conics,     // [C, N, 3] or [nnz, 3]
-    const float *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
-    const float *__restrict__ opacities,   // [C, N] or [nnz]
-    const float *__restrict__ backgrounds, // [C, COLOR_DIM]
+    const at::Half *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
+    const at::Half *__restrict__ conics,     // [C, N, 3] or [nnz, 3]
+    const at::Half *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
+    const at::Half *__restrict__ opacities,   // [C, N] or [nnz]
+    const at::Half *__restrict__ backgrounds, // [C, COLOR_DIM]
     const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
     const uint32_t tile_width, const uint32_t tile_height,
     const int32_t *__restrict__ tile_offsets, // [C, tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
-    float *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
-    float *__restrict__ render_alphas, // [C, image_height, image_width, 1]
+    at::Half *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
+    at::Half *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     int32_t *__restrict__ last_ids     // [C, image_height, image_width]
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
@@ -559,8 +559,8 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         backgrounds += camera_id * COLOR_DIM;
     }
 
-    float px = (float)j + 0.5f;
-    float py = (float)i + 0.5f;
+    at::Half px = (at::Half)j + 0.5f;
+    at::Half py = (at::Half)i + 0.5f;
     int32_t pix_id = i * image_width + j;
 
     // return if out of bounds
@@ -580,14 +580,16 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     uint32_t num_batches = (range_end - range_start + block_size - 1) / block_size;
 
     __shared__ int32_t id_batch[MAX_BLOCK_SIZE];
-    __shared__ float3 xy_opacity_batch[MAX_BLOCK_SIZE];
-    __shared__ float3 conic_batch[MAX_BLOCK_SIZE];
+    // __shared__ float3 xy_opacity_batch[MAX_BLOCK_SIZE];
+    // __shared__ float3 conic_batch[MAX_BLOCK_SIZE];
+    __shared__ at::Half xy_opacity_batch[MAX_BLOCK_SIZE*3];
+    __shared__ at::Half conic_batch[MAX_BLOCK_SIZE*3];
 
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
     // numerical precision so we use double for it. However double make bwd 1.5x slower
     // so we stick with float for now.
-    float T = 1.0f;
+    at::Half T = 1.0f;
     // index of most recent gaussian to write to this thread's pixel
     uint32_t cur_idx = 0;
 
@@ -603,6 +605,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         if (__syncthreads_count(done) >= block_size) {
             break;
         }
+        // range_end = min(range_end, 8); // TODO(fni): delete this
 
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
@@ -611,10 +614,17 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         if (idx < range_end) {
             int32_t g = flatten_ids[idx]; // flatten index in [C * N] or [nnz]
             id_batch[tr] = g;
-            const float2 xy = means2d[g];
-            const float opac = opacities[g];
-            xy_opacity_batch[tr] = {xy.x, xy.y, opac};
-            conic_batch[tr] = conics[g];
+            // const float2 xy = means2d[g];
+            // const float opac = opacities[g];
+            // xy_opacity_batch[tr] = {xy.x, xy.y, opac};
+            xy_opacity_batch[tr*3] = means2d[g*2];
+            xy_opacity_batch[tr*3 + 1] = means2d[g*2 + 1];
+            xy_opacity_batch[tr*3] = opacities[g];
+
+            // conic_batch[tr] = conics[g];
+            conic_batch[tr*3] = conics[g*3];
+            conic_batch[tr*3 + 1] = conics[g*3 + 1];
+            conic_batch[tr*3 + 2] = conics[g*3 + 2];
         }
 
         // wait for other threads to collect the gaussians in batch
@@ -623,27 +633,47 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
-            const float3 conic = conic_batch[t];
-            const float3 xy_opac = xy_opacity_batch[t];
-            const float opac = xy_opac.z;
-            const float2 delta = {xy_opac.x - px, xy_opac.y - py};
-            const float sigma =
-                0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
-                conic.y * delta.x * delta.y;
-            float alpha = min(0.999f, opac * __expf(-sigma));
+
+            // const float3 conic = conic_batch[t];
+            const at::Half conic[3] = {
+                conic_batch[t*3],
+                conic_batch[t*3 + 1],
+                conic_batch[t*3 + 2],
+            };
+
+            // const float3 xy_opac = xy_opacity_batch[t];
+            const at::Half xy_opac[3] = {
+                xy_opacity_batch[t*3],
+                xy_opacity_batch[t*3 + 1],
+                xy_opacity_batch[t*3 + 2],
+            };
+
+            // const at::Half opac = xy_opac.z;
+            const at::Half opac = xy_opac[2];
+            // const float2 delta = {xy_opac.x - px, xy_opac.y - py};
+            const at::Half delta[2] = {xy_opac[0] - px, xy_opac[1] - py};
+
+            // const at::Half sigma =
+            //     0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
+            //     conic.y * delta.x * delta.y;
+            const at::Half sigma =
+                (at::Half)0.5f * (conic[0] * delta[0] * delta[0] + conic[2] * delta[1] * delta[1]) +
+                conic[1] * delta[0] * delta[1];
+
+            at::Half alpha = min(0.999f, opac * __expf(-sigma));
             if (sigma < 0.f || alpha < 1.f / 255.f) {
                 continue;
             }
 
-            const float next_T = T * (1.0f - alpha);
+            const at::Half next_T = T * ((at::Half)1.0f - alpha);
             if (next_T <= 1e-4) { // this pixel is done: exclusive
                 done = true;
                 break;
             }
 
             int32_t g = id_batch[t];
-            const float vis = alpha * T;
-            const float *c_ptr = colors + g * COLOR_DIM;
+            const at::Half vis = alpha * T;
+            const at::Half *c_ptr = colors + g * COLOR_DIM;
             PRAGMA_UNROLL
             for (uint32_t k = 0; k < COLOR_DIM; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
@@ -709,9 +739,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     dim3 blocks = {C, tile_height, tile_width};
 
     torch::Tensor renders = torch::empty({C, image_height, image_width, channels},
-                                         means2d.options().dtype(torch::kFloat32));
+                                         means2d.options().dtype(torch::kFloat16));
     torch::Tensor alphas = torch::empty({C, image_height, image_width, 1},
-                                        means2d.options().dtype(torch::kFloat32));
+                                        means2d.options().dtype(torch::kFloat16));
     torch::Tensor last_ids = torch::empty({C, image_height, image_width},
                                           means2d.options().dtype(torch::kInt32));
 
@@ -723,211 +753,211 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     switch (channels) {
     case 1:
         rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 2:
         rasterize_to_pixels_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 3:
         rasterize_to_pixels_fwd_kernel<3><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 4:
         rasterize_to_pixels_fwd_kernel<4><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 5:
         rasterize_to_pixels_fwd_kernel<5><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 8:
         rasterize_to_pixels_fwd_kernel<8><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 9:
         rasterize_to_pixels_fwd_kernel<9><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 16:
         rasterize_to_pixels_fwd_kernel<16><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 17:
         rasterize_to_pixels_fwd_kernel<17><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 32:
         rasterize_to_pixels_fwd_kernel<32><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 33:
         rasterize_to_pixels_fwd_kernel<33><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 64:
         rasterize_to_pixels_fwd_kernel<64><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 65:
         rasterize_to_pixels_fwd_kernel<65><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 128:
         rasterize_to_pixels_fwd_kernel<128><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 129:
         rasterize_to_pixels_fwd_kernel<129><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 256:
         rasterize_to_pixels_fwd_kernel<256><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 257:
         rasterize_to_pixels_fwd_kernel<257><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 512:
         rasterize_to_pixels_fwd_kernel<512><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     case 513:
         rasterize_to_pixels_fwd_kernel<513><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+            opacities.data_ptr<at::Half>(),
+            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
             image_width, image_height, tile_size, tile_width, tile_height,
             tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
+            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
     default:

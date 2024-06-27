@@ -281,6 +281,7 @@ def rasterization(
 
     start = time.perf_counter_ns()
     isect_offsets = isect_offset_encode(isect_ids, C, tile_width, tile_height)
+    # print(f"    isect_offsets.shape: {isect_offsets.shape}")
     if profile:
         torch.cuda.synchronize()
     end = time.perf_counter_ns()
