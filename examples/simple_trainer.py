@@ -138,6 +138,8 @@ class Config:
     # Save training images to tensorboard
     tb_save_image: bool = False
 
+    max_eval_steps: int = -1
+
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
         self.save_steps = [int(i * factor) for i in self.save_steps]
@@ -847,6 +849,9 @@ class Runner:
                 # don't count the first iteration (due to startup overhead)
                 for k,v in profile_stats.items():
                     metrics[k].append(v)
+            
+            if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
+                break
 
         ellipse_time /= len(valloader)
 
@@ -927,6 +932,9 @@ class Runner:
             canvas = (canvas.cpu().numpy() * 255).astype(np.uint8)
             canvas_all.append(canvas)
 
+            if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
+                break
+
         # save to video
         video_dir = f"{cfg.result_dir}/videos"
         os.makedirs(video_dir, exist_ok=True)
@@ -967,7 +975,7 @@ def main(cfg: Config):
         for k in runner.splats.keys():
             runner.splats[k].data = ckpt["splats"][k]
         runner.eval(step=ckpt["step"])
-        runner.render_traj(step=ckpt["step"])
+        # runner.render_traj(step=ckpt["step"])
     else:
         runner.train()
 
