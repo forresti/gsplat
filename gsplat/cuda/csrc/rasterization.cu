@@ -619,7 +619,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             // xy_opacity_batch[tr] = {xy.x, xy.y, opac};
             xy_opacity_batch[tr*3] = means2d[g*2];
             xy_opacity_batch[tr*3 + 1] = means2d[g*2 + 1];
-            xy_opacity_batch[tr*3] = opacities[g];
+            xy_opacity_batch[tr*3 + 2] = opacities[g];
 
             // conic_batch[tr] = conics[g];
             conic_batch[tr*3] = conics[g*3];
