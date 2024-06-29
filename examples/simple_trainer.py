@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+import matplotlib.pyplot as plt
 
 import imageio
 import numpy as np
@@ -821,7 +822,7 @@ class Runner:
 
             torch.cuda.synchronize()
             tic = time.time()
-            colors, _, _, profile_stats = self.rasterize_splats(
+            colors, _, info, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -839,6 +840,24 @@ class Runner:
             imageio.imwrite(
                 f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
             )
+
+            # write histograms of how many gaussians per tile
+            # isect_diffs = info["isect_offsets"].diff()
+            # isect_hist = torch.histogram(isect_diffs.cpu().float())
+            # plt.plot(isect_hist.bin_edges[:-1], isect_hist.hist)
+            # plt.title("Histogram")
+            # plt.xlabel("number of gaussians per tile")
+            # hist_fname = f"{self.render_dir}/val_{i:04d}_histogram.png"
+            # plt.savefig(hist_fname)
+
+            # histogram cumsum
+            isect_diffs = info["isect_offsets"].diff()
+            isect_hist = torch.histogram(isect_diffs.cpu().float())
+            plt.plot(isect_hist.bin_edges[:-1], torch.cumsum(isect_hist.hist, dim=0))
+            plt.title("Histogram Cumulative Sum")
+            plt.xlabel("number of gaussians per tile")
+            hist_fname = f"{self.render_dir}/val_{i:04d}_histogram_cumsum.png"
+            plt.savefig(hist_fname)
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
