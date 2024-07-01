@@ -406,6 +406,7 @@ def rasterize_to_pixels(
     """
 
     C = isect_offsets.size(0)
+    # print(f"    C = {C}")
     device = means2d.device
     if packed:
         nnz = means2d.size(0)
