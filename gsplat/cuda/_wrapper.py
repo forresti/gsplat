@@ -792,8 +792,10 @@ def bin_indices_to_scales(isect_offsets, bins, N):
 
     isect_offsets_flat = isect_offsets.flatten()
     # TODO(fni): decide whether it should be N or N-1
-    N_tensor = torch.Tensor(N, dtype=isect_offsets.dtype, device=isect_offsets.device)
-    isect_offsets_flat = torch.cat(isect_offsets_flat, N_tensor)
+    N_tensor = torch.Tensor([N])
+    N_tensor = N_tensor.to(dtype=isect_offsets.dtype)
+    N_tensor = N_tensor.to(device=isect_offsets.device)
+    isect_offsets_flat = torch.cat((isect_offsets_flat, N_tensor))
     gaussians_per_tile = isect_offsets_flat.diff()  # for all elements, take prev-curr.
 
     # Categorize elements into bins
@@ -804,8 +806,8 @@ def bin_indices_to_scales(isect_offsets, bins, N):
     hist_indices = []
     for i in range(1, len(bins)):
         mask = bin_indices == i
-        hist_values.append(gaussians_per_tile[mask].tolist())
-        hist_indices.append(mask.nonzero(as_tuple=True)[0].tolist())
+        hist_values.append(gaussians_per_tile[mask])  # torch.int64
+        hist_indices.append(mask.nonzero(as_tuple=True)[0].to(dtype=torch.int32))
 
     return hist_indices
 
@@ -851,12 +853,13 @@ class _RasterizeToPixels(torch.autograd.Function):
             print("using rasterization_algo 1")
 
             _, N, _ = means2d.shape
-            bins = torch.Tensor([0, 1000, 4000, float('inf')], device=isect_offsets.device)
+            bins = torch.Tensor([0, 1024, 4096, float('inf')])
+            bins = bins.to(device=isect_offsets.device)
 
             tile_offsets_indices = bin_indices_to_scales(isect_offsets, bins, N)
 
             render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
-                "rasterize_to_pixels_fwd_load_balance_v1_tensor"
+                "rasterize_to_pixels_fwd_load_balance_v1"
             )(
                 means2d,
                 conics,

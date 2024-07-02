@@ -937,13 +937,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
 }
 
 
-
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     const uint32_t C,
     const uint32_t N,
-    const uint32_t B, // number of tiles in this bin
-    // TODO(fni): number of gaussians in this bin; where they start and end.
     const uint32_t n_isects,
     const bool packed,
     const float2 *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
@@ -957,18 +954,34 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     float *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     float *__restrict__ render_alphas, // [C, image_height, image_width, 1]
-    int32_t *__restrict__ last_ids     // [C, image_height, image_width]
-    const int32_t *__restrict__ tile_offsets_indices, // [C, B] for the current scale
+    int32_t *__restrict__ last_ids,     // [C, image_height, image_width]
+    const int32_t *__restrict__ tile_offsets_indices // [C, B] for the current scale
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
     // shared tile
 
     auto block = cg::this_thread_block();
     int32_t camera_id = block.group_index().x;
-    int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
-    uint32_t i = block.group_index().y * tile_size + block.thread_index().y;
-    uint32_t j = block.group_index().z * tile_size + block.thread_index().x;
 
+    // fni edited the following 3 lines for load-balance kernel.
+    // int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
+    // uint32_t i = block.group_index().y * tile_size + block.thread_index().y;
+    // uint32_t j = block.group_index().z * tile_size + block.thread_index().x;
+
+    int32_t tile_id_lookup = block.group_index().y; // block.group_index().y goes from 0 to B-1
+
+    // TODO(fni) make sure we flattened the tile_id’s correctly in pytorch.
+    int32_t tile_id = tile_offsets_indices[tile_id_lookup];
+
+    // tile_width is the width of the grid of tiles. i.e. image_width/tile_size.
+    int32_t tile_x = tile_id / tile_width;
+    int32_t tile_y = tile_id % tile_width;
+
+    int32_t i = tile_x*tile_size + block.thread_index().y;
+    int32_t j = tile_y*tile_size + block.thread_index().z;
+
+    // HACK: in the load_balance kernel, we only support camera_id=0 for now.
+    // maybe we should add an assert for camera_id==0, else fail?
     tile_offsets += camera_id * tile_height * tile_width;
     render_colors += camera_id * image_height * image_width * COLOR_DIM;
     render_alphas += camera_id * image_height * image_width;
@@ -1098,7 +1111,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     const torch::Tensor &opacities, // [C, N]  or [nnz]
     const at::optional<torch::Tensor> &backgrounds, // [C, channels]
     // image size
-    const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
     const torch::Tensor &flatten_ids,   // [n_isects]
@@ -1142,19 +1157,19 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // moving the channel padding from python to C side.
 
     for (auto & toi : tile_offsets_indices) {
+        // loop over bins.
+        // early bins have fewer gaussians; later bins have more gausians
 
         torch::IntArrayRef sizes = toi.sizes();
-        int64_t B = sizes[1]; // TODO(fni): verify this
+        uint32_t B = static_cast<uint32_t>(sizes[1]); // TODO(fni): verify this
 
         dim3 blocks = {C, B, 1};
 
-        // TODO(fni): get rid of the case-switch for now.
         switch (channels) {
-        case 1:
-            rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
+        case 3:
+            rasterize_to_pixels_fwd_load_balance_v1_kernel<3><<<blocks, threads, 0, stream>>>(
                 C,
                 N,
-                B,
                 n_isects,
                 packed,
                 (float2 *)means2d.data_ptr<float>(),
@@ -1172,7 +1187,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
                 renders.data_ptr<float>(),
                 alphas.data_ptr<float>(),
                 last_ids.data_ptr<int32_t>(),
-                tile_offsets_indices);
+                toi.data_ptr<int32_t>());
             break;
         default:
             AT_ERROR("Unsupported number of channels: ", channels);
@@ -1182,7 +1197,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
 }
 
 template <uint32_t COLOR_DIM>
-__global__ void rasterize_to_pixels_bwd_load_balance_v1_kernel(
+__global__ void rasterize_to_pixels_bwd_kernel(
     const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
     // fwd inputs
     const float2 *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
