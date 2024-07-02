@@ -940,7 +940,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
 
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
-    const uint32_t C, 
+    const uint32_t C,
     const uint32_t N,
     const uint32_t B, // number of tiles in this bin
     // TODO(fni): number of gaussians in this bin; where they start and end.
@@ -1126,7 +1126,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // Each block covers a tile on the image. In total there are
     // C * tile_height * tile_width blocks.
     dim3 threads = {tile_size, tile_size, 1};
-    dim3 blocks = {C, tile_height, tile_width};
+
 
     torch::Tensor renders = torch::empty({C, image_height, image_width, channels},
                                          means2d.options().dtype(torch::kFloat32));
@@ -1142,6 +1142,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // moving the channel padding from python to C side.
 
     for (auto & toi : tile_offsets_indices) {
+
+        torch::IntArrayRef sizes = toi.sizes();
+        int64_t B = sizes[1]; // TODO(fni): verify this
+
+        dim3 blocks = {C, B, 1};
 
         // TODO(fni): get rid of the case-switch for now.
         switch (channels) {
