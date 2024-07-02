@@ -36,6 +36,7 @@ def rasterization(
     sparse_grad: bool = False,
     absgrad: bool = False,
     rasterize_mode: Literal["classic", "antialiased"] = "classic",
+    rasterization_algo: int = 0,
 ) -> Tuple[Tensor, Tensor, Dict]:
     """Rasterize a set of 3D Gaussians (N) to a batch of image planes (C).
 
@@ -349,6 +350,7 @@ def rasterization(
                 backgrounds=backgrounds_chunk,
                 packed=packed,
                 absgrad=absgrad,
+                rasterization_algo=rasterization_algo,
             )
             render_colors.append(render_colors_)
             render_alphas.append(render_alphas_)
@@ -368,6 +370,7 @@ def rasterization(
             backgrounds=backgrounds,
             packed=packed,
             absgrad=absgrad,
+            rasterization_algo=rasterization_algo,
         )
     if render_mode in ["ED", "RGB+ED"]:
         # normalize the accumulated depth to get the expected depth

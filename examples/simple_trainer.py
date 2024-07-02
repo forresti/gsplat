@@ -141,6 +141,8 @@ class Config:
 
     max_eval_steps: int = -1
 
+    rasterization_algo: int = 0
+
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
         self.save_steps = [int(i * factor) for i in self.save_steps]
@@ -338,6 +340,7 @@ class Runner:
         scales = torch.exp(self.splats["scales"])  # [N, 3]
         opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
+        rasterization_algo = kwargs.pop("rasterization_algo", 0)
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
             colors = self.app_module(
@@ -366,6 +369,7 @@ class Runner:
             absgrad=self.cfg.absgrad,
             sparse_grad=self.cfg.sparse_grad,
             rasterize_mode=rasterize_mode,
+            rasterization_algo=rasterization_algo,
             **kwargs,
         )
         return render_colors, render_alphas, info, profile_stats
@@ -454,6 +458,7 @@ class Runner:
                 far_plane=cfg.far_plane,
                 image_ids=image_ids,
                 render_mode="RGB+ED" if cfg.depth_loss else "RGB",
+                rasterization_algo=cfg.rasterization_algo,
             )
             if renders.shape[-1] == 4:
                 colors, depths = renders[..., 0:3], renders[..., 3:4]
@@ -830,6 +835,7 @@ class Runner:
                 sh_degree=cfg.sh_degree,
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
+                rasterization_algo=cfg.rasterization_algo,
             )  # [1, H, W, 3]
             colors = torch.clamp(colors, 0.0, 1.0)
             torch.cuda.synchronize()
@@ -939,6 +945,7 @@ class Runner:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 render_mode="RGB+ED",
+                rasterization_algo=cfg.rasterization_algo,
             )  # [1, H, W, 4]
             colors = torch.clamp(renders[0, ..., 0:3], 0.0, 1.0)  # [H, W, 3]
             depths = renders[0, ..., 3:4]  # [H, W, 1]
@@ -981,6 +988,7 @@ class Runner:
             height=H,
             sh_degree=self.cfg.sh_degree,  # active all SH degrees
             radius_clip=3.0,  # skip GSs that have small image radius (in pixels)
+            rasterization_algo=cfg.rasterization_algo,
         )  # [1, H, W, 3]
         return render_colors[0].cpu().numpy()
 
