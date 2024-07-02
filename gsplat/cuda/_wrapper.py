@@ -405,6 +405,8 @@ def rasterize_to_pixels(
         - **Rendered alphas**. [C, image_height, image_width, 1]
     """
 
+    try_cpp_extension_tensor_list()
+
     C = isect_offsets.size(0)
     # print(f"    C = {C}")
     device = means2d.device
@@ -1124,3 +1126,14 @@ class _SphericalHarmonics(torch.autograd.Function):
         if not compute_v_dirs:
             v_dirs = None
         return None, v_dirs, v_coeffs, None
+
+
+def try_cpp_extension_tensor_list():
+
+    tensor_list = []
+    tensor_list.append(torch.Tensor([3]))
+    tensor_list.append(torch.Tensor([6]))
+    
+    out_tensor = _make_lazy_cuda_func("cpp_extension_tensor_list")(tensor_list)
+
+    print(f"in try_cpp_extension_tensor_list(), out_tensor: {out_tensor}")

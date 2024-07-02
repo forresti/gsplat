@@ -1415,3 +1415,8 @@ rasterize_to_pixels_bwd_tensor(
 
     return std::make_tuple(v_means2d_abs, v_means2d, v_conics, v_colors, v_opacities);
 }
+
+
+torch::Tensor cpp_extension_tensor_list(std::vector<torch::Tensor> tensor_list){
+    return tensor_list[0] + tensor_list[1];
+}

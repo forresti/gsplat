@@ -213,3 +213,6 @@ fully_fused_projection_packed_bwd_tensor(
     const torch::Tensor &v_conics,                      // [nnz, 3]
     const at::optional<torch::Tensor> &v_compensations, // [nnz] optional
     const bool viewmats_requires_grad, const bool sparse_grad);
+
+
+torch::Tensor cpp_extension_tensor_list(std::vector<torch::Tensor> tensor_list);
