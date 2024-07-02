@@ -940,7 +940,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
 
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
-    const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
+    const uint32_t C, 
+    const uint32_t N,
+    const uint32_t B, // number of tiles in this bin
+    // TODO(fni): number of gaussians in this bin; where they start and end.
+    const uint32_t n_isects,
+    const bool packed,
     const float2 *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
     const float3 *__restrict__ conics,     // [C, N, 3] or [nnz, 3]
     const float *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
@@ -953,7 +958,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     float *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
     float *__restrict__ render_alphas, // [C, image_height, image_width, 1]
     int32_t *__restrict__ last_ids     // [C, image_height, image_width]
-    // TODO(fni): add more tensors for histogram
+    const int32_t *__restrict__ tile_offsets_indices, // [C, B] for the current scale
 ) {
     // each thread draws one pixel, but also timeshares caching gaussians in a
     // shared tile
@@ -1096,8 +1101,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids   // [n_isects]
-    // TODO(fni): add more tensors for histogram
+    const torch::Tensor &flatten_ids,   // [n_isects]
+    const std::vector<torch::Tensor> &tile_offsets_indices // n_bins x [C, <variable length>]
 ) {
     DEVICE_GUARD(means2d);
     CHECK_INPUT(means2d);
@@ -1135,20 +1140,38 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // TODO: an optimization can be done by passing the actual number of channels into
     // the kernel functions and avoid necessary global memory writes. This requires
     // moving the channel padding from python to C side.
-    switch (channels) {
-    case 1:
-        rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    default:
-        AT_ERROR("Unsupported number of channels: ", channels);
+
+    for (auto & toi : tile_offsets_indices) {
+
+        // TODO(fni): get rid of the case-switch for now.
+        switch (channels) {
+        case 1:
+            rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
+                C,
+                N,
+                B,
+                n_isects,
+                packed,
+                (float2 *)means2d.data_ptr<float>(),
+                (float3 *)conics.data_ptr<float>(),
+                colors.data_ptr<float>(),
+                opacities.data_ptr<float>(),
+                backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+                image_width,
+                image_height,
+                tile_size,
+                tile_width,
+                tile_height,
+                tile_offsets.data_ptr<int32_t>(),
+                flatten_ids.data_ptr<int32_t>(),
+                renders.data_ptr<float>(),
+                alphas.data_ptr<float>(),
+                last_ids.data_ptr<int32_t>(),
+                tile_offsets_indices);
+            break;
+        default:
+            AT_ERROR("Unsupported number of channels: ", channels);
+        }
     }
     return std::make_tuple(renders, alphas, last_ids);
 }

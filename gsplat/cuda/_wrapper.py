@@ -785,6 +785,29 @@ class _FullyFusedProjection(torch.autograd.Function):
             None,
         )
 
+def bin_indices_to_scales(isect_offsets, bins, N):
+
+    C, tile_height, tile_width = isect_offsets.shape
+    assert C == 1
+
+    isect_offsets_flat = isect_offsets.flatten()
+    # TODO(fni): decide whether it should be N or N-1
+    N_tensor = torch.Tensor(N, dtype=isect_offsets.dtype, device=isect_offsets.device)
+    isect_offsets_flat = torch.cat(isect_offsets_flat, N_tensor)
+    gaussians_per_tile = isect_offsets_flat.diff()  # for all elements, take prev-curr.
+
+    # Categorize elements into bins
+    bin_indices = torch.bucketize(gaussians_per_tile, bins, right=True)
+
+    # Extract values and indices for each bin
+    hist_values = []
+    hist_indices = []
+    for i in range(1, len(bins)):
+        mask = bin_indices == i
+        hist_values.append(gaussians_per_tile[mask].tolist())
+        hist_indices.append(mask.nonzero(as_tuple=True)[0].tolist())
+
+    return hist_indices
 
 class _RasterizeToPixels(torch.autograd.Function):
     """Rasterize gaussians"""
@@ -822,14 +845,31 @@ class _RasterizeToPixels(torch.autograd.Function):
                 tile_size,
                 isect_offsets,
                 flatten_ids,
-                rasterization_algo,
             )
 
         elif rasterization_algo == 1:
             print("using rasterization_algo 1")
 
+            _, N, _ = means2d.shape
+            bins = torch.Tensor([0, 1000, 4000, float('inf')], device=isect_offsets.device)
 
-            
+            tile_offsets_indices = bin_indices_to_scales(isect_offsets, bins, N)
+
+            render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+                "rasterize_to_pixels_fwd_load_balance_v1_tensor"
+            )(
+                means2d,
+                conics,
+                colors,
+                opacities,
+                backgrounds,
+                width,
+                height,
+                tile_size,
+                isect_offsets,
+                flatten_ids,
+                tile_offsets_indices,
+            )
 
         ctx.save_for_backward(
             means2d,
