@@ -623,51 +623,16 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
-            const float3 conic = conic_batch[t];
-            const float3 xy_opac = xy_opacity_batch[t];
-            const float opac = xy_opac.z;
-            const float2 delta = {xy_opac.x - px, xy_opac.y - py};
-            const float sigma =
-                0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
-                conic.y * delta.x * delta.y;
-            float alpha = min(0.999f, opac * __expf(-sigma));
-            if (sigma < 0.f || alpha < 1.f / 255.f) {
-                continue;
-            }
-
-            const float next_T = T * (1.0f - alpha);
-            if (next_T <= 1e-4) { // this pixel is done: exclusive
-                done = true;
-                break;
-            }
-
-            int32_t g = id_batch[t];
-            const float vis = alpha * T;
-            const float *c_ptr = colors + g * COLOR_DIM;
-            PRAGMA_UNROLL
-            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-                pix_out[k] += c_ptr[k] * vis;
-            }
-            cur_idx = batch_start + t;
-
-            T = next_T;
+           const float3 conic = conic_batch[t];
+           const float3 xy_opac = xy_opacity_batch[t];
+           const float2 delta = {xy_opac.x - px, xy_opac.y - py};
+           const float sigma = xy_opac.x + xy_opac.y + xy_opac.z + conic.x + conic.y + conic.z;
+           T += sigma;
         }
     }
 
     if (inside) {
-        // Here T is the transmittance AFTER the last gaussian in this pixel.
-        // We (should) store double precision as T would be used in backward pass and
-        // it can be very small and causing large diff in gradients with float32.
-        // However, double precision makes the backward pass 1.5x slower so we stick
-        // with float for now.
-        render_alphas[pix_id] = 1.0f - T;
-        PRAGMA_UNROLL
-        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-            render_colors[pix_id * COLOR_DIM + k] =
-                backgrounds == nullptr ? pix_out[k] : (pix_out[k] + T * backgrounds[k]);
-        }
-        // index in bin of last gaussian in this pixel
-        last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+        render_colors[pix_id * COLOR_DIM] = T;
     }
 }
 

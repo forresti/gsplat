@@ -6,5 +6,6 @@ nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu  --capture-range=cuda
     --data_factor 4 \
     --result_dir ./results/bicycle \
     --max_steps 7000 \
+    --disable_viewer \
     --ckpt results/bicycle/ckpts/ckpt_6999.pt \
     --max_eval_steps 10

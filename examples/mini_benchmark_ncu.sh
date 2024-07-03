@@ -1,18 +1,18 @@
 # eval only
 
-ncu_out_fname=my_profile_ncu_no_shmem
+ncu_out_fname=my_profile_dummy_rasterization_kernel
 
 ncu --target-processes all --nvtx \
     --force-overwrite \
-    -o my_profile_ncu_no_shmem \
+    -o ${ncu_out_fname} \
     python simple_trainer.py \
     --data_dir ../../gaussian_splat_data/360_v2/bicycle/ \
     --data_factor 4 \
     --result_dir ./results/bicycle \
     --max_steps 7000 \
+    --disable_viewer \
     --ckpt results/bicycle/ckpts/ckpt_6999.pt \
-    --max_eval_steps 3 \
-    --rasterization_algo no_shmem
+    --max_eval_steps 3
 
 
 ncu --import ${ncu_out_fname}.ncu-rep --details > ${ncu_out_fname}.txt
