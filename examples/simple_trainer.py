@@ -827,6 +827,12 @@ class Runner:
 
             torch.cuda.synchronize()
             tic = time.time()
+            use_nvidia_profiler = (i > 0)
+            # use_nvidia_profiler = 0
+
+            if use_nvidia_profiler:
+                torch.cuda.cudart().cudaProfilerStart()
+
             colors, _, info, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
@@ -840,6 +846,9 @@ class Runner:
             colors = torch.clamp(colors, 0.0, 1.0)
             torch.cuda.synchronize()
             ellipse_time += time.time() - tic
+
+            if use_nvidia_profiler:
+                torch.cuda.cudart().cudaProfilerStop()
 
             # write images
             canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
@@ -864,6 +873,11 @@ class Runner:
             plt.xlabel("number of gaussians per tile")
             hist_fname = f"{self.render_dir}/val_{i:04d}_histogram_cumsum.png"
             plt.savefig(hist_fname)
+
+            # the following will be far more than the total number of gaussians
+            # because many gaussians are applied to several pixels
+            num_gaussians_for_all_pixels = (isect_diffs.sum()*16*16).item()
+            print(f"num_gaussians_for_all_pixels: {num_gaussians_for_all_pixels}")
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
