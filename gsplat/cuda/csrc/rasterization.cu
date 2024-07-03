@@ -948,8 +948,11 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     const float *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
     const float *__restrict__ opacities,   // [C, N] or [nnz]
     const float *__restrict__ backgrounds, // [C, COLOR_DIM]
-    const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
-    const uint32_t tile_width, const uint32_t tile_height,
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    const uint32_t tile_width,
+    const uint32_t tile_height,
     const int32_t *__restrict__ tile_offsets, // [C, tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     float *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
@@ -974,11 +977,11 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     int32_t tile_id = tile_offsets_indices[tile_id_lookup];
 
     // tile_width is the width of the grid of tiles. i.e. image_width/tile_size.
-    int32_t tile_x = tile_id / tile_width;
-    int32_t tile_y = tile_id % tile_width;
+    int32_t tile_x = tile_id % tile_width;
+    int32_t tile_y = tile_id / tile_width;
 
-    int32_t i = tile_x*tile_size + block.thread_index().y;
-    int32_t j = tile_y*tile_size + block.thread_index().z;
+    int32_t i = tile_y*tile_size + block.thread_index().y;
+    int32_t j = tile_x*tile_size + block.thread_index().x;
 
     // HACK: in the load_balance kernel, we only support camera_id=0 for now.
     // maybe we should add an assert for camera_id==0, else fail?
@@ -1161,9 +1164,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
         // early bins have fewer gaussians; later bins have more gausians
 
         torch::IntArrayRef sizes = toi.sizes();
-        uint32_t B = static_cast<uint32_t>(sizes[1]); // TODO(fni): verify this
+        uint32_t B = static_cast<uint32_t>(sizes[0]); // TODO(fni): verify this
 
         dim3 blocks = {C, B, 1};
+        std::cout << "    sizes = " << sizes << std::endl;
 
         switch (channels) {
         case 3:
