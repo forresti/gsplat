@@ -141,7 +141,7 @@ class Config:
 
     max_eval_steps: int = -1
 
-    rasterization_algo: int = 0
+    rasterization_algo: str = "default"
 
     def adjust_steps(self, factor: float):
         self.eval_steps = [int(i * factor) for i in self.eval_steps]
@@ -340,7 +340,7 @@ class Runner:
         scales = torch.exp(self.splats["scales"])  # [N, 3]
         opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
-        rasterization_algo = kwargs.pop("rasterization_algo", 0)
+        rasterization_algo = kwargs.pop("rasterization_algo", "default")
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
             colors = self.app_module(
@@ -874,7 +874,7 @@ class Runner:
                 # don't count the first iteration (due to startup overhead)
                 for k,v in profile_stats.items():
                     metrics[k].append(v)
-            
+
             if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
                 break
 
@@ -898,7 +898,7 @@ class Runner:
         #     f"Number of GS: {len(self.splats['means3d'])}"
         # )
         # save stats as json
-       
+
         # stats = {
         #     "psnr": psnr.item(),
         #     "ssim": ssim.item(),

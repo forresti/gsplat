@@ -381,7 +381,7 @@ def rasterize_to_pixels(
     backgrounds: Optional[Tensor] = None,  # [C, channels]
     packed: bool = False,
     absgrad: bool = False,
-    rasterization_algo: int = 0,
+    rasterization_algo: str = "default",
 ) -> Tuple[Tensor, Tensor]:
     """Rasterizes Gaussians to pixels.
 
@@ -828,11 +828,11 @@ class _RasterizeToPixels(torch.autograd.Function):
         isect_offsets: Tensor,  # [C, tile_height, tile_width]
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
-        rasterization_algo: int,
+        rasterization_algo: str,
     ) -> Tuple[Tensor, Tensor]:
 
 
-        if rasterization_algo == 0:
+        if rasterization_algo == "default":
             # original gsplat code
             render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
                 "rasterize_to_pixels_fwd"
@@ -849,8 +849,8 @@ class _RasterizeToPixels(torch.autograd.Function):
                 flatten_ids,
             )
 
-        elif rasterization_algo == 1:
-            print("using rasterization_algo 1")
+        elif rasterization_algo == "load_balance_v1":
+            print("using rasterization_algo load_balance_v1")
 
             _, N, _ = means2d.shape
             bins = torch.Tensor([0, 1024, 4096, float('inf')])
@@ -873,6 +873,8 @@ class _RasterizeToPixels(torch.autograd.Function):
                 flatten_ids,
                 tile_offsets_indices,
             )
+        else:
+            raise ValueError(f"unknown rasterization_algo: {rasterization_algo}")
 
         ctx.save_for_backward(
             means2d,
