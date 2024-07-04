@@ -10,10 +10,9 @@ ncu --target-processes all --nvtx \
     --data_factor 4 \
     --result_dir ./results/bicycle \
     --max_steps 7000 \
+    --disable_viewer \
     --ckpt results/bicycle/ckpts/ckpt_6999.pt \
-    --max_eval_steps 3 \
-    --rasterization_algo no_shmem
-
+    --max_eval_steps 3
 
 ncu --import ${ncu_out_fname}.ncu-rep --details > ${ncu_out_fname}.txt
 
