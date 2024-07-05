@@ -8,3 +8,4 @@ python simple_trainer.py \
     --max_steps 7000 \
     --disable_viewer \
     --ckpt results/bicycle/ckpts/ckpt_6999.pt
+    # --rasterization_algo "load_balance_v1"

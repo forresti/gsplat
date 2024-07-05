@@ -1,10 +1,10 @@
 # eval only
 
-ncu_out_fname=my_profile_ncu_no_shmem
+ncu_out_fname=my_profile_ncu
 
 ncu --target-processes all --nvtx \
     --force-overwrite \
-    -o my_profile_ncu_no_shmem \
+    -o ${ncu_out_fname} \
     python simple_trainer.py \
     --data_dir ../../gaussian_splat_data/360_v2/bicycle/ \
     --data_factor 4 \
