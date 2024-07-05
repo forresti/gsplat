@@ -3,7 +3,7 @@
 
 # export TORCH_CUDA_ARCH_LIST=8.6
 
-python simple_trainer.py \
+CUDA_LAUNCH_BLOCKING=1 python simple_trainer.py \
     --data_dir ../../gaussian_splat_data/360_v2/bicycle/ \
     --data_factor 4 \
     --result_dir ./results/bicycle \

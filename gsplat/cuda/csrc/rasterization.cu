@@ -721,28 +721,28 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // the kernel functions and avoid necessary global memory writes. This requires
     // moving the channel padding from python to C side.
     switch (channels) {
-    case 1:
-        rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 2:
-        rasterize_to_pixels_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
+    // case 1:
+    //     rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 2:
+    //     rasterize_to_pixels_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
     case 3:
         rasterize_to_pixels_fwd_kernel<3><<<blocks, threads, 0, stream>>>(
             C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
@@ -754,182 +754,182 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
             renders.data_ptr<float>(), alphas.data_ptr<float>(),
             last_ids.data_ptr<int32_t>());
         break;
-    case 4:
-        rasterize_to_pixels_fwd_kernel<4><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 5:
-        rasterize_to_pixels_fwd_kernel<5><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 8:
-        rasterize_to_pixels_fwd_kernel<8><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 9:
-        rasterize_to_pixels_fwd_kernel<9><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 16:
-        rasterize_to_pixels_fwd_kernel<16><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 17:
-        rasterize_to_pixels_fwd_kernel<17><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 32:
-        rasterize_to_pixels_fwd_kernel<32><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 33:
-        rasterize_to_pixels_fwd_kernel<33><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 64:
-        rasterize_to_pixels_fwd_kernel<64><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 65:
-        rasterize_to_pixels_fwd_kernel<65><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 128:
-        rasterize_to_pixels_fwd_kernel<128><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 129:
-        rasterize_to_pixels_fwd_kernel<129><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 256:
-        rasterize_to_pixels_fwd_kernel<256><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 257:
-        rasterize_to_pixels_fwd_kernel<257><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 512:
-        rasterize_to_pixels_fwd_kernel<512><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 513:
-        rasterize_to_pixels_fwd_kernel<513><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
-            (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
-            opacities.data_ptr<float>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<float>(), alphas.data_ptr<float>(),
-            last_ids.data_ptr<int32_t>());
-        break;
+    // case 4:
+    //     rasterize_to_pixels_fwd_kernel<4><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 5:
+    //     rasterize_to_pixels_fwd_kernel<5><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 8:
+    //     rasterize_to_pixels_fwd_kernel<8><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 9:
+    //     rasterize_to_pixels_fwd_kernel<9><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 16:
+    //     rasterize_to_pixels_fwd_kernel<16><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 17:
+    //     rasterize_to_pixels_fwd_kernel<17><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 32:
+    //     rasterize_to_pixels_fwd_kernel<32><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 33:
+    //     rasterize_to_pixels_fwd_kernel<33><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 64:
+    //     rasterize_to_pixels_fwd_kernel<64><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 65:
+    //     rasterize_to_pixels_fwd_kernel<65><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 128:
+    //     rasterize_to_pixels_fwd_kernel<128><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 129:
+    //     rasterize_to_pixels_fwd_kernel<129><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 256:
+    //     rasterize_to_pixels_fwd_kernel<256><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 257:
+    //     rasterize_to_pixels_fwd_kernel<257><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 512:
+    //     rasterize_to_pixels_fwd_kernel<512><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 513:
+    //     rasterize_to_pixels_fwd_kernel<513><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, (float2 *)means2d.data_ptr<float>(),
+    //         (float3 *)conics.data_ptr<float>(), colors.data_ptr<float>(),
+    //         opacities.data_ptr<float>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<float>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<float>(), alphas.data_ptr<float>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
     default:
         AT_ERROR("Unsupported number of channels: ", channels);
     }
@@ -1189,7 +1189,8 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     auto block = cg::this_thread_block();
     int32_t camera_id = block.group_index().x;
-    int32_t d = block.thread_index().z;
+    // int32_t d = block.thread_index().z;
+    int32_t d = 0;
 
     // fni edited the following 3 lines for load-balance kernel.
     // int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
@@ -1238,6 +1239,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     uint32_t gaussians_per_thread = (range_end - range_start + 1) / D;
     uint32_t range_start_local = range_start + (gaussians_per_thread * d);
     uint32_t range_end_local = range_start + (gaussians_per_thread * (d+1)); // TODO(fni) check for off-by-1
+    range_start_local = min(range_start_local, range_end);  // sanity-check that we don't go off the end
     range_end_local = min(range_end_local, range_end);  // sanity-check that we don't go off the end
 
     const uint32_t block_size = block.size();
@@ -1261,8 +1263,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
     // designated pixel
-    // uint32_t tr = block.thread_rank();
-    uint32_t tr = block.thread_index().x * block.thread_index().y;
+    uint32_t tr = block.thread_rank() / D;
 
     float pix_out[COLOR_DIM] = {0.f};
     for (uint32_t b = 0; b < num_batches_local; ++b) {
@@ -1335,25 +1336,24 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     // TODO(fni): if it's a bottleneck, make it efficient.
     // can likely use this for local prefix sums: https://www.irisa.fr/alf/downloads/collange/talks/collange_warp_synchronous_19.pdf
     // or this: https://developer.nvidia.com/blog/cooperative-groups/
-    if(d == 0){
-        for(uint32_t i=1; i<D; i++){
-            T_partial[i][tr] += T_partial[i-1][tr];
-        }
-    }
+    // if(d == 0){
+    //     for(uint32_t i=1; i<D; i++){
+    //         T_partial[i][tr] += T_partial[i-1][tr];
+    //     }
+    // }
 
     if(d == 0){
-        T = 1.0f;
 
         // start with d=0, which needs no T-1
-        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-            pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
-        }
+        // for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+        //     pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
+        // }
 
-        for(uint32_t i=0; i<D; i++){
-            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-                pix_out[k] = pix_out_partial[i][tr*COLOR_DIM + k] * T_partial[i-1][tr];
-            }
-        }
+        // for(uint32_t i=1; i<D; i++){
+        //     for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+        //         pix_out[k] = pix_out_partial[i][tr*COLOR_DIM + k] * T_partial[i-1][tr];
+        //     }
+        // }
 
         // WRITE BACK FINAL RESULTS
 
