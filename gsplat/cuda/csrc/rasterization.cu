@@ -1164,6 +1164,7 @@ template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     const uint32_t C,
     const uint32_t N,
+    const uint32_t D, // threads per pixel. TODO(fni): infer this from cg.
     const uint32_t n_isects,
     const bool packed,
     const float2 *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
@@ -1188,6 +1189,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     auto block = cg::this_thread_block();
     int32_t camera_id = block.group_index().x;
+    int32_t d = block.thread_index().z;
 
     // fni edited the following 3 lines for load-balance kernel.
     // int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
@@ -1195,8 +1197,6 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     // uint32_t j = block.group_index().z * tile_size + block.thread_index().x;
 
     int32_t tile_id_lookup = block.group_index().y; // block.group_index().y goes from 0 to B-1
-
-    // TODO(fni) make sure we flattened the tile_id’s correctly in pytorch.
     int32_t tile_id = tile_offsets_indices[tile_id_lookup];
 
     // tile_width is the width of the grid of tiles. i.e. image_width/tile_size.
@@ -1233,12 +1233,22 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
         (camera_id == C - 1) && (tile_id == tile_width * tile_height - 1)
             ? n_isects
             : tile_offsets[tile_id + 1];
+
+
+    uint32_t gaussians_per_thread = (range_end - range_start + 1) / D;
+    uint32_t range_start_local = range_start + (gaussians_per_thread * d);
+    uint32_t range_end_local = range_start + (gaussians_per_thread * (d+1)); // TODO(fni) check for off-by-1
+    range_end_local = min(range_end_local, range_end);  // sanity-check that we don't go off the end
+
     const uint32_t block_size = block.size();
     uint32_t num_batches = (range_end - range_start + block_size - 1) / block_size;
+    uint32_t num_batches_local = (range_end_local - range_start_local + block_size - 1) / block_size;
 
-    __shared__ int32_t id_batch[MAX_BLOCK_SIZE];
-    __shared__ float3 xy_opacity_batch[MAX_BLOCK_SIZE];
-    __shared__ float3 conic_batch[MAX_BLOCK_SIZE];
+    __shared__ int32_t id_batch[4][MAX_BLOCK_SIZE];
+    __shared__ float3 xy_opacity_batch[4][MAX_BLOCK_SIZE];
+    __shared__ float3 conic_batch[4][MAX_BLOCK_SIZE];
+    __shared__ float T_partial[4][MAX_BLOCK_SIZE];
+    __shared__ float pix_out_partial[4][MAX_BLOCK_SIZE*COLOR_DIM];
 
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
@@ -1251,10 +1261,11 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
     // designated pixel
-    uint32_t tr = block.thread_rank();
+    // uint32_t tr = block.thread_rank();
+    uint32_t tr = block.thread_index().x * block.thread_index().y;
 
     float pix_out[COLOR_DIM] = {0.f};
-    for (uint32_t b = 0; b < num_batches; ++b) {
+    for (uint32_t b = 0; b < num_batches_local; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
         if (__syncthreads_count(done) >= block_size) {
@@ -1263,25 +1274,26 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
-        uint32_t batch_start = range_start + block_size * b;
+        uint32_t batch_start = range_start_local + block_size * b;
         uint32_t idx = batch_start + tr;
-        if (idx < range_end) {
+        if (idx < range_end_local) {
             int32_t g = flatten_ids[idx]; // flatten index in [C * N] or [nnz]
-            id_batch[tr] = g;
+            id_batch[d][tr] = g;
             const float2 xy = means2d[g];
             const float opac = opacities[g];
-            xy_opacity_batch[tr] = {xy.x, xy.y, opac};
-            conic_batch[tr] = conics[g];
+            xy_opacity_batch[d][tr] = {xy.x, xy.y, opac};
+            conic_batch[d][tr] = conics[g];
         }
 
         // wait for other threads to collect the gaussians in batch
         block.sync();
 
+
         // process gaussians in the current batch for this pixel
-        uint32_t batch_size = min(block_size, range_end - batch_start);
+        uint32_t batch_size = min(block_size, range_end_local - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
-            const float3 conic = conic_batch[t];
-            const float3 xy_opac = xy_opacity_batch[t];
+            const float3 conic = conic_batch[d][t];
+            const float3 xy_opac = xy_opacity_batch[d][t];
             const float opac = xy_opac.z;
             const float2 delta = {xy_opac.x - px, xy_opac.y - py};
             const float sigma =
@@ -1298,7 +1310,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
                 break;
             }
 
-            int32_t g = id_batch[t];
+            int32_t g = id_batch[d][t];
             const float vis = alpha * T;
             const float *c_ptr = colors + g * COLOR_DIM;
             PRAGMA_UNROLL
@@ -1311,20 +1323,55 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
         }
     }
 
-    if (inside) {
-        // Here T is the transmittance AFTER the last gaussian in this pixel.
-        // We (should) store double precision as T would be used in backward pass and
-        // it can be very small and causing large diff in gradients with float32.
-        // However, double precision makes the backward pass 1.5x slower so we stick
-        // with float for now.
-        render_alphas[pix_id] = 1.0f - T;
-        PRAGMA_UNROLL
-        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-            render_colors[pix_id * COLOR_DIM + k] =
-                backgrounds == nullptr ? pix_out[k] : (pix_out[k] + T * backgrounds[k]);
+    // REDUCTION ACROSS THE D THREADS
+
+    for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+        pix_out_partial[d][tr*COLOR_DIM + k] = pix_out[k];
+    }
+    T_partial[d][tr] = T;
+    block.sync();
+
+    // prefix sum of T values
+    // TODO(fni): if it's a bottleneck, make it efficient.
+    // can likely use this for local prefix sums: https://www.irisa.fr/alf/downloads/collange/talks/collange_warp_synchronous_19.pdf
+    // or this: https://developer.nvidia.com/blog/cooperative-groups/
+    if(d == 0){
+        for(uint32_t i=1; i<D; i++){
+            T_partial[i][tr] += T_partial[i-1][tr];
         }
-        // index in bin of last gaussian in this pixel
-        last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+    }
+
+    if(d == 0){
+        T = 1.0f;
+
+        // start with d=0, which needs no T-1
+        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+            pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
+        }
+
+        for(uint32_t i=0; i<D; i++){
+            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                pix_out[k] = pix_out_partial[i][tr*COLOR_DIM + k] * T_partial[i-1][tr];
+            }
+        }
+
+        // WRITE BACK FINAL RESULTS
+
+        if (inside) {
+            // Here T is the transmittance AFTER the last gaussian in this pixel.
+            // We (should) store double precision as T would be used in backward pass and
+            // it can be very small and causing large diff in gradients with float32.
+            // However, double precision makes the backward pass 1.5x slower so we stick
+            // with float for now.
+            render_alphas[pix_id] = 1.0f - T;
+            PRAGMA_UNROLL
+            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                render_colors[pix_id * COLOR_DIM + k] =
+                    backgrounds == nullptr ? pix_out[k] : (pix_out[k] + T * backgrounds[k]);
+            }
+            // index in bin of last gaussian in this pixel
+            last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+        }
     }
 }
 
@@ -1344,6 +1391,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
     const torch::Tensor &flatten_ids,   // [n_isects]
     const std::vector<torch::Tensor> &tile_offsets_indices // n_bins x [C, <variable length>]
+    // const torch::Tensor &bins // [n_bins]. cpu tensor.
 ) {
     DEVICE_GUARD(means2d);
     CHECK_INPUT(means2d);
@@ -1382,14 +1430,28 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // the kernel functions and avoid necessary global memory writes. This requires
     // moving the channel padding from python to C side.
 
+    uint32_t i = 0;
     for (auto & toi : tile_offsets_indices) {
         // loop over bins.
         // early bins have fewer gaussians; later bins have more gausians
 
         torch::IntArrayRef sizes = toi.sizes();
         uint32_t B = static_cast<uint32_t>(sizes[0]); // TODO(fni): verify this
+        uint32_t D = 1; // number of "depth" threads. for tiles with many gaussians, have more threads.
+        if(i == 0){
+            D = 1;
+        }
+        else if (i == 1){
+            // TODO(fni): compute this based on `torch::Tensor& bins`
+            D = 4;
+        }
+        else{
+            // D = 8;
+            D = 4;
+        }
 
-        dim3 blocks = {C, B, 1};
+
+        dim3 blocks = {C, B, D};
         std::cout << "    sizes = " << sizes << std::endl;
 
         switch (channels) {
@@ -1397,6 +1459,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
             rasterize_to_pixels_fwd_load_balance_v1_kernel<3><<<blocks, threads, 0, stream>>>(
                 C,
                 N,
+                D,
                 n_isects,
                 packed,
                 (float2 *)means2d.data_ptr<float>(),
@@ -1419,6 +1482,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
         default:
             AT_ERROR("Unsupported number of channels: ", channels);
         }
+        i += 1;
     }
     return std::make_tuple(renders, alphas, last_ids);
 }
