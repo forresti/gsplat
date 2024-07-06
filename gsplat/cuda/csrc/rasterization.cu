@@ -990,10 +990,6 @@ __global__ void rasterize_to_pixels_fwd_no_shmem_kernel(
     const uint32_t block_size = block.size();
     uint32_t num_batches = (range_end - range_start + block_size - 1) / block_size;
 
-    // __shared__ int32_t id_batch[MAX_BLOCK_SIZE];
-    // __shared__ float3 xy_opacity_batch[MAX_BLOCK_SIZE];
-    // __shared__ float3 conic_batch[MAX_BLOCK_SIZE];
-
     // current visibility left to render
     // transmittance is gonna be used in the backward pass which requires a high
     // numerical precision so we use double for it. However double make bwd 1.5x slower
@@ -1018,25 +1014,10 @@ __global__ void rasterize_to_pixels_fwd_no_shmem_kernel(
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
         uint32_t batch_start = range_start + block_size * b;
-        // uint32_t idx = batch_start + tr;
-        // if (idx < range_end) {
-        //     int32_t g = flatten_ids[idx]; // flatten index in [C * N] or [nnz]
-        //     id_batch[tr] = g;
-        //     const float2 xy = means2d[g];
-        //     const float opac = opacities[g];
-        //     xy_opacity_batch[tr] = {xy.x, xy.y, opac};
-        //     conic_batch[tr] = conics[g];
-        // }
-
-        // // wait for other threads to collect the gaussians in batch
-        // block.sync();
 
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, range_end - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
-            // const float3 conic = conic_batch[t];
-            // const float3 xy_opac = xy_opacity_batch[t];
-            // const float opac = xy_opac.z;
             const uint32_t g_idx = batch_start + t;
             const int32_t g = flatten_ids[g_idx];
             const float3 conic = conics[g];
@@ -1189,8 +1170,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     auto block = cg::this_thread_block();
     int32_t camera_id = block.group_index().x;
-    // int32_t d = block.thread_index().z;
-    int32_t d = 0;
+    int32_t d = block.thread_index().z;
 
     // fni edited the following 3 lines for load-balance kernel.
     // int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
@@ -1289,7 +1269,6 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
         // wait for other threads to collect the gaussians in batch
         block.sync();
 
-
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, range_end_local - batch_start);
         for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
@@ -1326,10 +1305,10 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     // REDUCTION ACROSS THE D THREADS
 
-    for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-        pix_out_partial[d][tr*COLOR_DIM + k] = pix_out[k];
-    }
-    T_partial[d][tr] = T;
+    // for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+    //     pix_out_partial[d][tr*COLOR_DIM + k] = pix_out[k];
+    // }
+    // T_partial[d][tr] = T;
     block.sync();
 
     // prefix sum of T values
@@ -1344,7 +1323,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     if(d == 0){
 
-        // start with d=0, which needs no T-1
+        // // start with d=0, which needs no T-1
         // for (uint32_t k = 0; k < COLOR_DIM; ++k) {
         //     pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
         // }

@@ -876,8 +876,13 @@ class Runner:
 
             # the following will be far more than the total number of gaussians
             # because many gaussians are applied to several pixels
-            num_gaussians_for_all_pixels = (isect_diffs.sum()*16*16).item()
-            print(f"num_gaussians_for_all_pixels: {num_gaussians_for_all_pixels}")
+
+            # num_gaussians_for_all_pixels = (isect_diffs.sum()*16*16).item()
+            # print(f"num_gaussians_for_all_pixels: {num_gaussians_for_all_pixels}")
+
+            # isect_diffs_capped = torch.clamp(isect_diffs, min=0, max=1024)
+            # num_gaussians_for_all_pixels_capped = (isect_diffs_capped.sum()*16*16).item()
+            # print(f"num_gaussians_for_all_pixels, capped at 1024: {num_gaussians_for_all_pixels_capped}")
 
             pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
             colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]

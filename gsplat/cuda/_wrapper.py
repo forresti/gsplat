@@ -870,8 +870,9 @@ class _RasterizeToPixels(torch.autograd.Function):
             print("using rasterization_algo load_balance_v1")
 
             _, N, _ = means2d.shape
-            bins = torch.Tensor([0, float('inf')])
-            # bins = torch.Tensor([0, 1024, 4096, float('inf')])
+            # bins = torch.Tensor([0, float('inf')])
+            # bins = torch.Tensor([0, 1024, 2048, 4096, float('inf')])
+            bins = torch.Tensor([0, 1024, 4096, float('inf')])
             bins = bins.to(device=isect_offsets.device)
 
             tile_offsets_indices = bin_indices_to_scales(isect_offsets, bins, N)
