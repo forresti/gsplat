@@ -742,16 +742,56 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing its
     // designated pixel
-    uint32_t tr = block.thread_rank();
+    // uint32_t tr = block.thread_rank();
 
     float pix_out[COLOR_DIM] = {0.f};
 
     for (uint32_t b = 0; b < num_batches; ++b) {
         uint32_t batch_start = range_start + block_size * b;
-        uint32_t idx = batch_start + tr;
+        // uint32_t idx = batch_start + tr;
         uint32_t batch_size = min(block_size, range_end - batch_start);
 
-        for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
+        const uint32_t unroll_factor = 8;
+        uint32_t t = 0;
+
+        for(t = 0; (t < batch_size/unroll_factor) && (!done); t++){
+
+            uint32_t base_offset = batch_start + t*unroll_factor;
+
+            T += opacities[flatten_ids[base_offset]] +
+                 opacities[flatten_ids[base_offset+1]] +
+                 opacities[flatten_ids[base_offset+2]] +
+                 opacities[flatten_ids[base_offset+3]] +
+                 opacities[flatten_ids[base_offset+4]] +
+                 opacities[flatten_ids[base_offset+5]] +
+                 opacities[flatten_ids[base_offset+6]] +
+                 opacities[flatten_ids[base_offset+7]];
+        }
+
+        for (t = 0; (t < batch_size-unroll_factor) && (!done); t+=unroll_factor) {
+
+            // if(t < batch_size-unroll_factor){
+            //     const uint32_t g_idx = batch_start + t;
+            //     const int32_t g = flatten_ids[g_idx];
+            //     T += opacities[g];
+            // }
+
+            // int32_t base_offset = batch_start + t;
+
+            // T += opacities[flatten_ids[base_offset]];
+
+            // T += opacities[flatten_ids[base_offset]] +
+            //      opacities[flatten_ids[base_offset+1]] +
+            //      opacities[flatten_ids[base_offset+2]] +
+            //      opacities[flatten_ids[base_offset+3]] +
+            //      opacities[flatten_ids[base_offset+4]] +
+            //      opacities[flatten_ids[base_offset+5]] +
+            //      opacities[flatten_ids[base_offset+6]] +
+            //      opacities[flatten_ids[base_offset+7]];
+        }
+
+        // cleanup the final elements that aren't divisible by unroll_factor
+        for (; t < batch_size; t++) {
             const uint32_t g_idx = batch_start + t;
             const int32_t g = flatten_ids[g_idx];
             T += opacities[g];
