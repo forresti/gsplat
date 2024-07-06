@@ -805,9 +805,10 @@ class Runner:
         )
         ellipse_time = 0
         warmup_iters = 1
-        metrics = {"psnr": [],
-                   "ssim": [],
-                   "lpips": [],
+        metrics = {
+                #    "psnr": [],
+                #    "ssim": [],
+                #    "lpips": [],
                    "fully_fused_projection_time": [],
                    "isect_tiles_time": [],
                    "isect_offset_encode_time": [],
@@ -815,20 +816,24 @@ class Runner:
                    "rasterize_to_pixels_time": [],
                    "total_rasterization_time": [],
                    }
-    
+
         # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
 
         for i, data in enumerate(valloader):
-            # if i >= warmup_iters:
-            #     # thx: https://dev-discuss.pytorch.org/t/using-nsight-systems-to-profile-gpu-workload/59
-            #     torch.cuda.cudart().cudaProfilerStart()
             camtoworlds = data["camtoworld"].to(device)
             Ks = data["K"].to(device)
             pixels = data["image"].to(device) / 255.0
             height, width = pixels.shape[1:3]
 
+            use_nvidia_profiler = (i > 0)
+            # use_nvidia_profiler = 0
+
+            if use_nvidia_profiler:
+                torch.cuda.cudart().cudaProfilerStart()
+
             torch.cuda.synchronize()
             tic = time.time()
+
             colors, _, _, profile_stats = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
@@ -841,26 +846,28 @@ class Runner:
             colors = torch.clamp(colors, 0.0, 1.0)
             torch.cuda.synchronize()
             ellipse_time += time.time() - tic
+            if use_nvidia_profiler:
+                torch.cuda.cudart().cudaProfilerStop()
 
             # write images
-            canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
-            imageio.imwrite(
-                f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
-            )
+            # canvas = torch.cat([pixels, colors], dim=2).squeeze(0).cpu().numpy()
+            # imageio.imwrite(
+            #     f"{self.render_dir}/val_{i:04d}.png", (canvas * 255).astype(np.uint8)
+            # )
 
-            pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
-            colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
-            metrics["psnr"].append(self.psnr(colors, pixels))
-            metrics["ssim"].append(self.ssim(colors, pixels))
-            metrics["lpips"].append(self.lpips(colors, pixels))
+            # pixels = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
+            # colors = colors.permute(0, 3, 1, 2)  # [1, 3, H, W]
+            # metrics["psnr"].append(self.psnr(colors, pixels))
+            # metrics["ssim"].append(self.ssim(colors, pixels))
+            # metrics["lpips"].append(self.lpips(colors, pixels))
             if i >= warmup_iters:
                 # don't count the first iteration (due to startup overhead)
                 for k,v in profile_stats.items():
                     metrics[k].append(v)
-        
+
             if (cfg.max_eval_steps != -1) and (i > cfg.max_eval_steps):
                 break
-        
+
         # torch.cuda.cudart().cudaProfilerStop()
 
         ellipse_time /= len(valloader)
@@ -883,7 +890,7 @@ class Runner:
         #     f"Number of GS: {len(self.splats['means3d'])}"
         # )
         # save stats as json
-       
+
         # stats = {
         #     "psnr": psnr.item(),
         #     "ssim": ssim.item(),
@@ -985,7 +992,7 @@ def main(cfg: Config):
         for k in runner.splats.keys():
             runner.splats[k].data = ckpt["splats"][k]
         runner.eval(step=ckpt["step"])
-        runner.render_traj(step=ckpt["step"])
+        # runner.render_traj(step=ckpt["step"])
     else:
         runner.train()
 

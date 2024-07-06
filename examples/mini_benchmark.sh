@@ -7,5 +7,6 @@ python simple_trainer.py \
     --result_dir ./results/bicycle \
     --max_steps 7000 \
     --ckpt results/bicycle/ckpts/ckpt_6999.pt \
+    --disable_viewer \
     --max_eval_steps 10
 

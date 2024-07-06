@@ -651,53 +651,22 @@ __global__ void rasterize_to_pixels_fwd_kernel(
             // const at::Half opac = xy_opac.z;
             const at::Half opac = xy_opac[2];
             // const float2 delta = {xy_opac.x - px, xy_opac.y - py};
-            const at::Half delta[2] = {xy_opac[0] - px, xy_opac[1] - py};
+            // const at::Half delta[2] = {xy_opac[0] - px, xy_opac[1] - py};
 
             // const at::Half sigma =
             //     0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
             //     conic.y * delta.x * delta.y;
-            const at::Half sigma =
-                (at::Half)0.5f * (conic[0] * delta[0] * delta[0] + conic[2] * delta[1] * delta[1]) +
-                conic[1] * delta[0] * delta[1];
+            // const at::Half sigma =
+            //     (at::Half)0.5f * (conic[0] * delta[0] * delta[0] + conic[2] * delta[1] * delta[1]) +
+            //     conic[1] * delta[0] * delta[1];
 
-            at::Half alpha = min(0.999f, opac * __expf(-sigma));
-            if (sigma < 0.f || alpha < 1.f / 255.f) {
-                continue;
-            }
-
-            const at::Half next_T = T * ((at::Half)1.0f - alpha);
-            if (next_T <= 1e-4) { // this pixel is done: exclusive
-                done = true;
-                break;
-            }
-
-            int32_t g = id_batch[t];
-            const at::Half vis = alpha * T;
-            const at::Half *c_ptr = colors + g * COLOR_DIM;
-            PRAGMA_UNROLL
-            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-                pix_out[k] += c_ptr[k] * vis;
-            }
-            cur_idx = batch_start + t;
-
-            T = next_T;
+            const at::Half sigma = xy_opac[0] + xy_opac[1] + opac + conic[0] + conic[1] + conic[2];
+            T += sigma;
         }
     }
 
     if (inside) {
-        // Here T is the transmittance AFTER the last gaussian in this pixel.
-        // We (should) store double precision as T would be used in backward pass and
-        // it can be very small and causing large diff in gradients with float32.
-        // However, double precision makes the backward pass 1.5x slower so we stick
-        // with float for now.
-        render_alphas[pix_id] = 1.0f - T;
-        PRAGMA_UNROLL
-        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-            render_colors[pix_id * COLOR_DIM + k] =
-                backgrounds == nullptr ? pix_out[k] : (pix_out[k] + T * backgrounds[k]);
-        }
-        // index in bin of last gaussian in this pixel
-        last_ids[pix_id] = static_cast<int32_t>(cur_idx);
+        render_colors[pix_id * COLOR_DIM] = T;
     }
 }
 

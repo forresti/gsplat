@@ -315,6 +315,13 @@ def rasterization(
     end = time.perf_counter_ns()
     profile_stats["spherical_harmonics_time"] = int((end - start) / 1e3) # us
 
+    means2d = means2d.half()
+    conics = conics.half()
+    colors = colors.half()
+    opacities = opacities.half()
+    if backgrounds is not None:
+        backgrounds = backgrounds.half()
+
     # Rasterize to pixels
     start = time.perf_counter_ns()
     if render_mode in ["RGB+D", "RGB+ED"]:
