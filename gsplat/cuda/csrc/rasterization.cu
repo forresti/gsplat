@@ -526,6 +526,7 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
     return std::make_tuple(gaussian_ids, pixel_ids);
 }
 
+# if 0
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_kernel(
     const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
@@ -662,6 +663,98 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
             const at::Half sigma = xy_opac[0] + xy_opac[1] + opac + conic[0] + conic[1] + conic[2];
             T += sigma;
+        }
+    }
+
+    if (inside) {
+        render_colors[pix_id * COLOR_DIM] = T;
+    }
+}
+#endif
+
+template <uint32_t COLOR_DIM>
+__global__ void rasterize_to_pixels_fwd_kernel(
+    const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
+    const at::Half *__restrict__ means2d,    // [C, N, 2] or [nnz, 2]
+    const at::Half *__restrict__ conics,     // [C, N, 3] or [nnz, 3]
+    const at::Half *__restrict__ colors,      // [C, N, COLOR_DIM] or [nnz, COLOR_DIM]
+    const at::Half *__restrict__ opacities,   // [C, N] or [nnz]
+    const at::Half *__restrict__ backgrounds, // [C, COLOR_DIM]
+    const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
+    const uint32_t tile_width, const uint32_t tile_height,
+    const int32_t *__restrict__ tile_offsets, // [C, tile_height, tile_width]
+    const int32_t *__restrict__ flatten_ids,  // [n_isects]
+    at::Half *__restrict__ render_colors, // [C, image_height, image_width, COLOR_DIM]
+    at::Half *__restrict__ render_alphas, // [C, image_height, image_width, 1]
+    int32_t *__restrict__ last_ids     // [C, image_height, image_width]
+) {
+    // each thread draws one pixel, but also timeshares caching gaussians in a
+    // shared tile
+
+    auto block = cg::this_thread_block();
+    int32_t camera_id = block.group_index().x;
+    int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
+    uint32_t i = block.group_index().y * tile_size + block.thread_index().y;
+    uint32_t j = block.group_index().z * tile_size + block.thread_index().x;
+
+    tile_offsets += camera_id * tile_height * tile_width;
+    render_colors += camera_id * image_height * image_width * COLOR_DIM;
+    render_alphas += camera_id * image_height * image_width;
+    last_ids += camera_id * image_height * image_width;
+    if (backgrounds != nullptr) {
+        backgrounds += camera_id * COLOR_DIM;
+    }
+
+    at::Half px = (at::Half)j + 0.5f;
+    at::Half py = (at::Half)i + 0.5f;
+    int32_t pix_id = i * image_width + j;
+
+    // return if out of bounds
+    // keep not rasterizing threads around for reading data
+    bool inside = (i < image_height && j < image_width);
+    bool done = !inside;
+
+    // have all threads in tile process the same gaussians in batches
+    // first collect gaussians between range.x and range.y in batches
+    // which gaussians to look through in this tile
+    int32_t range_start = tile_offsets[tile_id];
+    int32_t range_end =
+        (camera_id == C - 1) && (tile_id == tile_width * tile_height - 1)
+            ? n_isects
+            : tile_offsets[tile_id + 1];
+    const uint32_t block_size = block.size();
+    uint32_t num_batches = (range_end - range_start + block_size - 1) / block_size;
+
+    __shared__ int32_t id_batch[MAX_BLOCK_SIZE];
+    // __shared__ float3 xy_opacity_batch[MAX_BLOCK_SIZE];
+    // __shared__ float3 conic_batch[MAX_BLOCK_SIZE];
+    __shared__ at::Half xy_opacity_batch[MAX_BLOCK_SIZE*3];
+    __shared__ at::Half conic_batch[MAX_BLOCK_SIZE*3];
+
+    // current visibility left to render
+    // transmittance is gonna be used in the backward pass which requires a high
+    // numerical precision so we use double for it. However double make bwd 1.5x slower
+    // so we stick with float for now.
+    at::Half T = 1.0f;
+    // index of most recent gaussian to write to this thread's pixel
+    uint32_t cur_idx = 0;
+
+    // collect and process batches of gaussians
+    // each thread loads one gaussian at a time before rasterizing its
+    // designated pixel
+    uint32_t tr = block.thread_rank();
+
+    float pix_out[COLOR_DIM] = {0.f};
+
+    for (uint32_t b = 0; b < num_batches; ++b) {
+        uint32_t batch_start = range_start + block_size * b;
+        uint32_t idx = batch_start + tr;
+        uint32_t batch_size = min(block_size, range_end - batch_start);
+
+        for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
+            const uint32_t g_idx = batch_start + t;
+            const int32_t g = flatten_ids[g_idx];
+            T += opacities[g];
         }
     }
 
