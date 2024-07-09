@@ -7,6 +7,7 @@
 
 
 namespace cg = cooperative_groups;
+#define OUTPUTS_PER_THREAD 1
 
 /****************************************************************************
  * Gaussian Tile Intersection
@@ -526,7 +527,7 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
     return std::make_tuple(gaussian_ids, pixel_ids);
 }
 
-# if 0
+# if 1
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_kernel(
     const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
@@ -549,8 +550,6 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     auto block = cg::this_thread_block();
     int32_t camera_id = block.group_index().x;
     int32_t tile_id = block.group_index().y * tile_width + block.group_index().z;
-    uint32_t i = block.group_index().y * tile_size + block.thread_index().y;
-    uint32_t j = block.group_index().z * tile_size + block.thread_index().x;
 
     tile_offsets += camera_id * tile_height * tile_width;
     render_colors += camera_id * image_height * image_width * COLOR_DIM;
@@ -560,14 +559,11 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         backgrounds += camera_id * COLOR_DIM;
     }
 
+    uint32_t i = block.group_index().y * tile_size + block.thread_index().y;
+    uint32_t j = block.group_index().z * tile_size + block.thread_index().x * OUTPUTS_PER_THREAD;
+
     at::Half px = (at::Half)j + 0.5f;
     at::Half py = (at::Half)i + 0.5f;
-    int32_t pix_id = i * image_width + j;
-
-    // return if out of bounds
-    // keep not rasterizing threads around for reading data
-    bool inside = (i < image_height && j < image_width);
-    bool done = !inside;
 
     // have all threads in tile process the same gaussians in batches
     // first collect gaussians between range.x and range.y in batches
@@ -590,7 +586,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
     // transmittance is gonna be used in the backward pass which requires a high
     // numerical precision so we use double for it. However double make bwd 1.5x slower
     // so we stick with float for now.
-    at::Half T = 1.0f;
+    at::Half T[OUTPUTS_PER_THREAD] = 1.0f; // TODO(fni): do I need {1.0f, 1.0f, 1.0f, 1.0f}?
     // index of most recent gaussian to write to this thread's pixel
     uint32_t cur_idx = 0;
 
@@ -601,12 +597,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
     float pix_out[COLOR_DIM] = {0.f};
     for (uint32_t b = 0; b < num_batches; ++b) {
-        // resync all threads before beginning next batch
-        // end early if entire tile is done
-        if (__syncthreads_count(done) >= block_size) {
-            break;
-        }
-        // range_end = min(range_end, 8); // TODO(fni): delete this
+        block.sync();
 
         // each thread fetch 1 gaussian from front to back
         // index of gaussian to load
@@ -633,45 +624,47 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 
         // process gaussians in the current batch for this pixel
         uint32_t batch_size = min(block_size, range_end - batch_start);
-        for (uint32_t t = 0; (t < batch_size) && !done; ++t) {
+        for (uint32_t t = 0; t < batch_size; ++t) {
 
-            // const float3 conic = conic_batch[t];
-            const at::Half conic[3] = {
-                conic_batch[t*3],
-                conic_batch[t*3 + 1],
-                conic_batch[t*3 + 2],
-            };
+            for(uint32_t jplus=0; jplus<OUTPUTS_PER_THREAD; jplus++)
+            {
+                uint32_t j_tmp = j + jplus;
+                at::Half px = (at::Half)(j_tmp) + 0.5f;
 
-            // const float3 xy_opac = xy_opacity_batch[t];
-            const at::Half xy_opac[3] = {
-                xy_opacity_batch[t*3],
-                xy_opacity_batch[t*3 + 1],
-                xy_opacity_batch[t*3 + 2],
-            };
+                // const float3 conic = conic_batch[t];
+                const at::Half conic[3] = {
+                    conic_batch[t*3],
+                    conic_batch[t*3 + 1],
+                    conic_batch[t*3 + 2],
+                };
 
-            // const at::Half opac = xy_opac.z;
-            const at::Half opac = xy_opac[2];
-            // const float2 delta = {xy_opac.x - px, xy_opac.y - py};
-            // const at::Half delta[2] = {xy_opac[0] - px, xy_opac[1] - py};
+                // const float3 xy_opac = xy_opacity_batch[t];
+                const at::Half xy_opac[3] = {
+                    xy_opacity_batch[t*3],
+                    xy_opacity_batch[t*3 + 1],
+                    xy_opacity_batch[t*3 + 2],
+                };
 
-            // const at::Half sigma =
-            //     0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
-            //     conic.y * delta.x * delta.y;
-            // const at::Half sigma =
-            //     (at::Half)0.5f * (conic[0] * delta[0] * delta[0] + conic[2] * delta[1] * delta[1]) +
-            //     conic[1] * delta[0] * delta[1];
-
-            const at::Half sigma = xy_opac[0] + xy_opac[1] + opac + conic[0] + conic[1] + conic[2];
-            T += sigma;
+                const at::Half sigma = xy_opac[0] + xy_opac[1] + xy_opac[2] + conic[0] + conic[1] + conic[2] + px;
+                T[jplus] += sigma;
+            }
         }
     }
 
-    if (inside) {
-        render_colors[pix_id * COLOR_DIM] = T;
+    for(uint32_t jplus=0; jplus<OUTPUTS_PER_THREAD; jplus++)
+    {
+        uint32_t j_tmp = j + jplus;
+        int32_t pix_id = i * image_width + j_tmp;
+        bool inside = (i < image_height && j_tmp < image_width);
+        if (inside) {
+            render_colors[pix_id * COLOR_DIM] = T[jplus];
+        }
     }
+
 }
 #endif
 
+#if 0
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_kernel(
     const uint32_t C, const uint32_t N, const uint32_t n_isects, const bool packed,
@@ -768,33 +761,9 @@ __global__ void rasterize_to_pixels_fwd_kernel(
                  opacities[flatten_ids[base_offset+7]];
         }
 
-        for (t = 0; (t < batch_size-unroll_factor) && (!done); t+=unroll_factor) {
-
-            // if(t < batch_size-unroll_factor){
-            //     const uint32_t g_idx = batch_start + t;
-            //     const int32_t g = flatten_ids[g_idx];
-            //     T += opacities[g];
-            // }
-
-            // int32_t base_offset = batch_start + t;
-
-            // T += opacities[flatten_ids[base_offset]];
-
-            // T += opacities[flatten_ids[base_offset]] +
-            //      opacities[flatten_ids[base_offset+1]] +
-            //      opacities[flatten_ids[base_offset+2]] +
-            //      opacities[flatten_ids[base_offset+3]] +
-            //      opacities[flatten_ids[base_offset+4]] +
-            //      opacities[flatten_ids[base_offset+5]] +
-            //      opacities[flatten_ids[base_offset+6]] +
-            //      opacities[flatten_ids[base_offset+7]];
-        }
-
         // cleanup the final elements that aren't divisible by unroll_factor
         for (; t < batch_size; t++) {
-            const uint32_t g_idx = batch_start + t;
-            const int32_t g = flatten_ids[g_idx];
-            T += opacities[g];
+            T += opacities[flatten_ids[batch_start + t]];
         }
     }
 
@@ -802,6 +771,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         render_colors[pix_id * COLOR_DIM] = T;
     }
 }
+#endif
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_tensor(
     // Gaussian parameters
@@ -837,7 +807,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
 
     // Each block covers a tile on the image. In total there are
     // C * tile_height * tile_width blocks.
-    dim3 threads = {tile_size, tile_size, 1};
+    dim3 threads = {tile_size/OUTPUTS_PER_THREAD, tile_size, 1};
     dim3 blocks = {C, tile_height, tile_width};
 
     torch::Tensor renders = torch::empty({C, image_height, image_width, channels},
@@ -853,28 +823,28 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     // the kernel functions and avoid necessary global memory writes. This requires
     // moving the channel padding from python to C side.
     switch (channels) {
-    case 1:
-        rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 2:
-        rasterize_to_pixels_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
+    // case 1:
+    //     rasterize_to_pixels_fwd_kernel<1><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 2:
+    //     rasterize_to_pixels_fwd_kernel<2><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
     case 3:
         rasterize_to_pixels_fwd_kernel<3><<<blocks, threads, 0, stream>>>(
             C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
@@ -886,182 +856,182 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
             renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
             last_ids.data_ptr<int32_t>());
         break;
-    case 4:
-        rasterize_to_pixels_fwd_kernel<4><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 5:
-        rasterize_to_pixels_fwd_kernel<5><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 8:
-        rasterize_to_pixels_fwd_kernel<8><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 9:
-        rasterize_to_pixels_fwd_kernel<9><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 16:
-        rasterize_to_pixels_fwd_kernel<16><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 17:
-        rasterize_to_pixels_fwd_kernel<17><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 32:
-        rasterize_to_pixels_fwd_kernel<32><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 33:
-        rasterize_to_pixels_fwd_kernel<33><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 64:
-        rasterize_to_pixels_fwd_kernel<64><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 65:
-        rasterize_to_pixels_fwd_kernel<65><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 128:
-        rasterize_to_pixels_fwd_kernel<128><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 129:
-        rasterize_to_pixels_fwd_kernel<129><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 256:
-        rasterize_to_pixels_fwd_kernel<256><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 257:
-        rasterize_to_pixels_fwd_kernel<257><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 512:
-        rasterize_to_pixels_fwd_kernel<512><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
-    case 513:
-        rasterize_to_pixels_fwd_kernel<513><<<blocks, threads, 0, stream>>>(
-            C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
-            conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
-            opacities.data_ptr<at::Half>(),
-            backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
-            image_width, image_height, tile_size, tile_width, tile_height,
-            tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
-            renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
-            last_ids.data_ptr<int32_t>());
-        break;
+    // case 4:
+    //     rasterize_to_pixels_fwd_kernel<4><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 5:
+    //     rasterize_to_pixels_fwd_kernel<5><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 8:
+    //     rasterize_to_pixels_fwd_kernel<8><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 9:
+    //     rasterize_to_pixels_fwd_kernel<9><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 16:
+    //     rasterize_to_pixels_fwd_kernel<16><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 17:
+    //     rasterize_to_pixels_fwd_kernel<17><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 32:
+    //     rasterize_to_pixels_fwd_kernel<32><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 33:
+    //     rasterize_to_pixels_fwd_kernel<33><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 64:
+    //     rasterize_to_pixels_fwd_kernel<64><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 65:
+    //     rasterize_to_pixels_fwd_kernel<65><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 128:
+    //     rasterize_to_pixels_fwd_kernel<128><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 129:
+    //     rasterize_to_pixels_fwd_kernel<129><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 256:
+    //     rasterize_to_pixels_fwd_kernel<256><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 257:
+    //     rasterize_to_pixels_fwd_kernel<257><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 512:
+    //     rasterize_to_pixels_fwd_kernel<512><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
+    // case 513:
+    //     rasterize_to_pixels_fwd_kernel<513><<<blocks, threads, 0, stream>>>(
+    //         C, N, n_isects, packed, means2d.data_ptr<at::Half>(),
+    //         conics.data_ptr<at::Half>(), colors.data_ptr<at::Half>(),
+    //         opacities.data_ptr<at::Half>(),
+    //         backgrounds.has_value() ? backgrounds.value().data_ptr<at::Half>() : nullptr,
+    //         image_width, image_height, tile_size, tile_width, tile_height,
+    //         tile_offsets.data_ptr<int32_t>(), flatten_ids.data_ptr<int32_t>(),
+    //         renders.data_ptr<at::Half>(), alphas.data_ptr<at::Half>(),
+    //         last_ids.data_ptr<int32_t>());
+    //     break;
     default:
         AT_ERROR("Unsupported number of channels: ", channels);
     }
