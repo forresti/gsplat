@@ -849,6 +849,23 @@ class _RasterizeToPixels(torch.autograd.Function):
                 flatten_ids,
             )
 
+        elif rasterization_algo == "multiple_output":
+            # original gsplat code
+            render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+                "rasterize_to_pixels_fwd_multiple_output"
+            )(
+                means2d,
+                conics,
+                colors,
+                opacities,
+                backgrounds,
+                width,
+                height,
+                tile_size,
+                isect_offsets,
+                flatten_ids,
+            )
+
         elif rasterization_algo == "no_shmem":
             # original gsplat code
             render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
