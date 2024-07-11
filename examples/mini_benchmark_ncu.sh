@@ -1,6 +1,6 @@
 # eval only
 
-ncu_out_fname=my_profile_ncu_OUTPUTS_PER_THREAD_8_more_metrics
+ncu_out_fname=my_profile_ncu_OUTPUTS_PER_THREAD_8_partialHalf
 
 ncu --target-processes all --nvtx \
     --force-overwrite \

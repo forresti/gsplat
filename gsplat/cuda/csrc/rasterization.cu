@@ -1,5 +1,6 @@
 #include "bindings.h"
 #include "helpers.cuh"
+#include <cuda_fp16.h>
 #include <cooperative_groups.h>
 #include <cub/cub.cuh>
 #include <chrono> // thx: https://stackoverflow.com/questions/43801626/measuring-latency-over-network
@@ -1017,7 +1018,7 @@ __global__ void rasterize_to_pixels_fwd_multiple_output_kernel(
     // designated pixel
     uint32_t tr = block.thread_rank();
 
-    float pix_out[OUTPUTS_PER_THREAD][COLOR_DIM] =  {{0.f}};
+    at::Half pix_out[OUTPUTS_PER_THREAD][COLOR_DIM] =  {{0.f}};
     for (uint32_t b = 0; b < num_batches; ++b) {
         // resync all threads before beginning next batch
         // end early if entire tile is done
@@ -1079,7 +1080,7 @@ __global__ void rasterize_to_pixels_fwd_multiple_output_kernel(
                 const float *c_ptr = colors + g * COLOR_DIM;
                 PRAGMA_UNROLL
                 for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-                    pix_out[jplus][k] += c_ptr[k] * vis;
+                    pix_out[jplus][k] += __float2half(c_ptr[k] * vis);
                 }
                 cur_idx = batch_start + t;
 
@@ -1106,7 +1107,7 @@ __global__ void rasterize_to_pixels_fwd_multiple_output_kernel(
         PRAGMA_UNROLL
         for (uint32_t k = 0; k < COLOR_DIM; ++k) {
             render_colors[pix_id_tmp * COLOR_DIM + k] =
-                backgrounds == nullptr ? pix_out[jplus][k] : (pix_out[jplus][k] + T[jplus] * backgrounds[k]);
+                backgrounds == nullptr ? __half2float(pix_out[jplus][k]) : (__half2float(pix_out[jplus][k]) + T[jplus] * backgrounds[k]);
             // render_colors[pix_id_tmp * COLOR_DIM + k] =
             //     backgrounds == nullptr ? pix_out[0][k] : (pix_out[0][k] + T[0] * backgrounds[k]);
         }
