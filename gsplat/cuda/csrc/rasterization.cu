@@ -460,10 +460,6 @@ __global__ void rasterize_to_indices_in_range_kernel(
     }
 }
 
-__global__ void dummy_kernel(){
-
-}
-
 std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
     const uint32_t range_start, const uint32_t range_end, // iteration steps
     const torch::Tensor transmittances, // [C, image_height, image_width]
@@ -530,7 +526,6 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
             transmittances.data_ptr<float>(), chunk_starts.data_ptr<int32_t>(), nullptr,
             gaussian_ids.data_ptr<int64_t>(), pixel_ids.data_ptr<int64_t>());
     }
-    dummy_kernel<<<1,1>>>(); // this build system seems to expect each c++ interop function to call cuda.
     return std::make_tuple(gaussian_ids, pixel_ids);
 }
 
@@ -553,7 +548,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     bool packed = means2d.dim() == 2;
 
     uint32_t COLOR_DIM = 3;
-    // uint32_t C = tile_offsets.size(0);         // number of cameras
     uint32_t C = 1; // TODO(fni): remove C
     uint32_t camera_id = 1;
     uint32_t N = packed ? 0 : means2d.size(1); // number of gaussians
@@ -561,6 +555,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     uint32_t tile_height = tile_offsets.size(1);
     uint32_t tile_width = tile_offsets.size(2);
     uint32_t n_isects = flatten_ids.size(0);
+
+    std::cout << "image_width: " << image_width << " image_height: " << image_height << " tile_size: " << tile_size << std::endl;
+    std::cout << "tile_height: " << tile_height << " tile_width: " << tile_width << " n_isects: " << n_isects << " channels: " << channels << std::endl;
+    std::cout << "N: " << N << std::endl;
 
     torch::Tensor renders = torch::empty({C, image_height, image_width, channels},
                                          means2d.options().dtype(torch::kFloat32));
@@ -574,14 +572,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     int32_t* _tile_offsets = tile_offsets.data_ptr<int32_t>();
     int32_t* _flatten_ids = flatten_ids.data_ptr<int32_t>();
     float* render_colors = renders.data_ptr<float>();
-    // float* _alphas = alphas.data_ptr<float>();
-    // int32_t* _last_ids = last_ids.data_ptr<int32_t>());
-
-    float pix_out[COLOR_DIM] = {0.f};
 
     // j,i is an output pixel
     for(int i=0; i<image_height; i++){ // y
+        std::cout << "i = " << i << std::endl;
         for(int j=0; j<image_width; j++){ // x
+            float pix_out[COLOR_DIM] = {0.f};
+
+            // std::cout << "  j = " << j << std::endl;
             float px = (float)j + 0.5f;
             float py = (float)i + 0.5f;
             int32_t pix_id = i * image_width + j;
@@ -592,13 +590,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
             int32_t tile_id = tile_y * tile_width + tile_x;
             float T = 1.0f;
             int32_t range_start = _tile_offsets[tile_id];
-            int32_t range_end =
-                (camera_id == C - 1) && (tile_id == tile_width * tile_height - 1)
-                    ? n_isects
-                    : _tile_offsets[tile_id + 1];
+            int32_t range_end;
+            if( pix_id < (((image_width-1) * (image_height-1)) - 1) ){
+                range_end = _tile_offsets[tile_id + 1];
+            }
+            else{
+                range_end = n_isects;
+            }
 
-            bool inside = (i < image_height && j < image_width);
-            bool done = !inside;
+            bool done = false;
 
             // each output pixel is based on these gaussians
             for(int32_t idx=range_start; (idx<range_end)&&(!done); idx++){
@@ -629,14 +629,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
                 T = next_T;
             }
 
-            if (inside) {
-                for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-                    render_colors[pix_id * COLOR_DIM + k] = pix_out[k];
-                }
+            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                render_colors[pix_id * COLOR_DIM + k] = pix_out[k];
             }
         }
     }
-
     return std::make_tuple(renders, alphas, last_ids);
 }
 

@@ -181,8 +181,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
     const uint32_t image_width, const uint32_t image_height, const uint32_t tile_size,
     // intersections
     const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
-    const torch::Tensor &flatten_ids,     // [n_isects]
-    const std::vector<torch::Tensor> &tile_offsets_indices // n_bins x [C, <variable length>]
+    const torch::Tensor &flatten_ids     // [n_isects]
 );
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
