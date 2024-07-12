@@ -5,6 +5,7 @@
 #include "third_party/glm/glm/gtc/type_ptr.hpp"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <cuda_runtime.h>
 
 #define PRAGMA_UNROLL _Pragma("unroll")
 
@@ -83,5 +84,13 @@ __device__ __forceinline__ float atomicMax(float *address, float val) {
     } while (assumed != old);
     return __int_as_float(old);
 }
+
+#define CHECK_CUDART(x) do { \
+  cudaError_t res = (x); \
+  if(res != cudaSuccess) { \
+    fprintf(stderr, "CUDART: %s = %d (%s) at (%s:%d)\n", #x, res, cudaGetErrorString(res),__FILE__,__LINE__); \
+    exit(1); \
+  } \
+} while(0)
 
 #endif // GSPLAT_CUDA_HELPERS_H

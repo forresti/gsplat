@@ -23,6 +23,7 @@ m.def("compute_sh_bwd", &compute_sh_bwd_tensor);
     m.def("rasterize_to_pixels_fwd", &rasterize_to_pixels_fwd_tensor);
     m.def("rasterize_to_pixels_fwd_multiple_output", &rasterize_to_pixels_fwd_multiple_output_tensor);
     m.def("rasterize_to_pixels_fwd_load_balance_v1", &rasterize_to_pixels_fwd_load_balance_v1_tensor);
+    m.def("rasterize_to_pixels_fwd_cpu", &rasterize_to_pixels_fwd_cpu_tensor);
     m.def("rasterize_to_pixels_fwd_no_shmem", &rasterize_to_pixels_fwd_no_shmem_tensor);
     m.def("rasterize_to_pixels_bwd", &rasterize_to_pixels_bwd_tensor);
 

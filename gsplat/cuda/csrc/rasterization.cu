@@ -5,6 +5,7 @@
 #include <cub/cub.cuh>
 #include <chrono> // thx: https://stackoverflow.com/questions/43801626/measuring-latency-over-network
 #include <iostream>
+#include <cmath>
 
 #define OUTPUTS_PER_THREAD 8
 
@@ -459,6 +460,10 @@ __global__ void rasterize_to_indices_in_range_kernel(
     }
 }
 
+__global__ void dummy_kernel(){
+
+}
+
 std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
     const uint32_t range_start, const uint32_t range_end, // iteration steps
     const torch::Tensor transmittances, // [C, image_height, image_width]
@@ -525,8 +530,116 @@ std::tuple<torch::Tensor, torch::Tensor> rasterize_to_indices_in_range_tensor(
             transmittances.data_ptr<float>(), chunk_starts.data_ptr<int32_t>(), nullptr,
             gaussian_ids.data_ptr<int64_t>(), pixel_ids.data_ptr<int64_t>());
     }
+    dummy_kernel<<<1,1>>>(); // this build system seems to expect each c++ interop function to call cuda.
     return std::make_tuple(gaussian_ids, pixel_ids);
 }
+
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_cpu_tensor(
+    // Gaussian parameters
+    const torch::Tensor &means2d,   // [C, N, 2] or [nnz, 2]
+    const torch::Tensor &conics,    // [C, N, 3] or [nnz, 3]
+    const torch::Tensor &colors,    // [C, N, channels] or [nnz, channels]
+    const torch::Tensor &opacities, // [C, N]  or [nnz]
+    const at::optional<torch::Tensor> &backgrounds, // [C, channels]
+    // image size
+    const uint32_t image_width,
+    const uint32_t image_height,
+    const uint32_t tile_size,
+    // intersections
+    const torch::Tensor &tile_offsets, // [C, tile_height, tile_width]
+    const torch::Tensor &flatten_ids   // [n_isects]
+) {
+    bool packed = means2d.dim() == 2;
+
+    uint32_t COLOR_DIM = 3;
+    // uint32_t C = tile_offsets.size(0);         // number of cameras
+    uint32_t C = 1; // TODO(fni): remove C
+    uint32_t camera_id = 1;
+    uint32_t N = packed ? 0 : means2d.size(1); // number of gaussians
+    uint32_t channels = colors.size(-1);
+    uint32_t tile_height = tile_offsets.size(1);
+    uint32_t tile_width = tile_offsets.size(2);
+    uint32_t n_isects = flatten_ids.size(0);
+
+    torch::Tensor renders = torch::empty({C, image_height, image_width, channels},
+                                         means2d.options().dtype(torch::kFloat32));
+    torch::Tensor alphas = torch::empty({0});
+    torch::Tensor last_ids = torch::empty({0});
+
+    float2* _means2d = (float2*)means2d.data_ptr<float>();
+    float3* _conics = (float3*)conics.data_ptr<float>();
+    float* _colors = colors.data_ptr<float>();
+    float* _opacities = opacities.data_ptr<float>();
+    int32_t* _tile_offsets = tile_offsets.data_ptr<int32_t>();
+    int32_t* _flatten_ids = flatten_ids.data_ptr<int32_t>();
+    float* render_colors = renders.data_ptr<float>();
+    // float* _alphas = alphas.data_ptr<float>();
+    // int32_t* _last_ids = last_ids.data_ptr<int32_t>());
+
+    float pix_out[COLOR_DIM] = {0.f};
+
+    // j,i is an output pixel
+    for(int i=0; i<image_height; i++){ // y
+        for(int j=0; j<image_width; j++){ // x
+            float px = (float)j + 0.5f;
+            float py = (float)i + 0.5f;
+            int32_t pix_id = i * image_width + j;
+
+            // each output pixel is in a tile; typically a 16x16 tile
+            int32_t tile_x = j / tile_size;
+            int32_t tile_y = i / tile_size;
+            int32_t tile_id = tile_y * tile_width + tile_x;
+            float T = 1.0f;
+            int32_t range_start = _tile_offsets[tile_id];
+            int32_t range_end =
+                (camera_id == C - 1) && (tile_id == tile_width * tile_height - 1)
+                    ? n_isects
+                    : _tile_offsets[tile_id + 1];
+
+            bool inside = (i < image_height && j < image_width);
+            bool done = !inside;
+
+            // each output pixel is based on these gaussians
+            for(int32_t idx=range_start; (idx<range_end)&&(!done); idx++){
+                const int32_t g = _flatten_ids[idx];
+                const float3 conic = _conics[g];
+                const float2 xy = {_means2d[g].x, _means2d[g].y};
+                const float opac = _opacities[g];
+                const float2 delta = {xy.x - px, xy.y - py};
+                const float sigma =
+                    0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
+                    conic.y * delta.x * delta.y;
+                float alpha = min(0.999f, opac * std::exp(-sigma));
+                if (sigma < 0.f || alpha < 1.f / 255.f) {
+                    continue;
+                }
+
+                const float next_T = T * (1.0f - alpha);
+                if (next_T <= 1e-4) {
+                    done = true;
+                    break;
+                }
+                const float vis = alpha * T;
+                const float *c_ptr = _colors + g * COLOR_DIM;
+                for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                    pix_out[k] += c_ptr[k] * vis;
+                }
+
+                T = next_T;
+            }
+
+            if (inside) {
+                for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                    render_colors[pix_id * COLOR_DIM + k] = pix_out[k];
+                }
+            }
+        }
+    }
+
+    return std::make_tuple(renders, alphas, last_ids);
+}
+
 
 template <uint32_t COLOR_DIM>
 __global__ void rasterize_to_pixels_fwd_kernel(
@@ -1469,7 +1582,7 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
     range_start_local = min(range_start_local, range_end);  // sanity-check that we don't go off the end
     range_end_local = min(range_end_local, range_end);  // sanity-check that we don't go off the end
 
-    const uint32_t block_size = block.size();
+    const uint32_t block_size = block.size() / D;
     uint32_t num_batches = (range_end - range_start + block_size - 1) / block_size;
     uint32_t num_batches_local = (range_end_local - range_start_local + block_size - 1) / block_size;
 
@@ -1552,34 +1665,34 @@ __global__ void rasterize_to_pixels_fwd_load_balance_v1_kernel(
 
     // REDUCTION ACROSS THE D THREADS
 
-    // for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-    //     pix_out_partial[d][tr*COLOR_DIM + k] = pix_out[k];
-    // }
-    // T_partial[d][tr] = T;
+    for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+        pix_out_partial[d][tr*COLOR_DIM + k] = pix_out[k];
+    }
+    T_partial[d][tr] = T;
     block.sync();
 
     // prefix sum of T values
     // TODO(fni): if it's a bottleneck, make it efficient.
     // can likely use this for local prefix sums: https://www.irisa.fr/alf/downloads/collange/talks/collange_warp_synchronous_19.pdf
     // or this: https://developer.nvidia.com/blog/cooperative-groups/
-    // if(d == 0){
-    //     for(uint32_t i=1; i<D; i++){
-    //         T_partial[i][tr] += T_partial[i-1][tr];
-    //     }
-    // }
+    if(d == 0){
+        for(uint32_t i=1; i<D; i++){
+            T_partial[i][tr] += T_partial[i-1][tr];
+        }
+    }
 
     if(d == 0){
 
         // // start with d=0, which needs no T-1
-        // for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-        //     pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
-        // }
+        for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+            pix_out[k] = pix_out_partial[0][tr*COLOR_DIM + k];
+        }
 
-        // for(uint32_t i=1; i<D; i++){
-        //     for (uint32_t k = 0; k < COLOR_DIM; ++k) {
-        //         pix_out[k] = pix_out_partial[i][tr*COLOR_DIM + k] * T_partial[i-1][tr];
-        //     }
-        // }
+        for(uint32_t i=1; i<D; i++){
+            for (uint32_t k = 0; k < COLOR_DIM; ++k) {
+                pix_out[k] = pix_out_partial[i][tr*COLOR_DIM + k] * T_partial[i-1][tr];
+            }
+        }
 
         // WRITE BACK FINAL RESULTS
 
@@ -1709,6 +1822,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> rasterize_to_pixels_fwd_
             AT_ERROR("Unsupported number of channels: ", channels);
         }
         i += 1;
+        CHECK_CUDART(cudaGetLastError());
     }
     return std::make_tuple(renders, alphas, last_ids);
 }

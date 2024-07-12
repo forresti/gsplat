@@ -883,6 +883,39 @@ class _RasterizeToPixels(torch.autograd.Function):
                 flatten_ids,
             )
 
+        elif rasterization_algo == "cpu":
+            h_means2d = means2d.cpu()
+            h_conics = conics.cpu()
+            h_colors = colors.cpu()
+            h_opacities = opacities.cpu()
+            if backgrounds:
+                h_backgrounds = backgrounds.cpu()
+            else:
+                h_backgrounds = None
+            h_isect_offsets = isect_offsets.cpu()
+            h_flatten_ids = flatten_ids.cpu()
+
+            # original gsplat code
+            render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+                "rasterize_to_pixels_fwd_cpu"
+            )(
+                h_means2d,
+                h_conics,
+                h_colors,
+                h_opacities,
+                h_backgrounds,
+                width,
+                height,
+                tile_size,
+                h_isect_offsets,
+                h_flatten_ids,
+            )
+
+            render_colors = render_colors.to(device=means2d.device)
+            render_alphas = render_alphas.to(device=means2d.device)
+            last_ids = last_ids.to(device=means2d.device)
+
+
         elif rasterization_algo == "load_balance_v1":
             print("using rasterization_algo load_balance_v1")
 
